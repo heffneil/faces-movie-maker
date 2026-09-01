@@ -283,6 +283,72 @@ def colorize(field, style, W, H, wob, stretch=0.0):
     return frame
 
 
+def _spread_words(text, start, end, g2p):
+    """Phonemize `text` and spread its words across [start, end] seconds,
+    weighted by phoneme count. Returns (start, end, phonemes) tuples."""
+    words = []
+    for r in g2p(text):
+        for t in (getattr(r, "tokens", None) or []):
+            if t.phonemes:
+                words.append(t.phonemes)
+    if not words:
+        return []
+    weights = np.array([max(1, len([c for c in w if c not in SKIP])) for w in words], float)
+    edges = start + np.concatenate([[0], np.cumsum(weights)]) / weights.sum() * (end - start)
+    return list(zip(edges[:-1], edges[1:], words))
+
+
+# xLights/Papagayo timing labels -> our sprites ('etc' is the consonant rest)
+XT_VIS = {n: n for n in SPRITE_NAMES} | {"ETC": "REST", "REST": "REST"}
+
+
+def xtiming_track(xml_text, env, n_frames):
+    """Parse an xLights .xtiming file into a per-frame sprite track.
+    Prefers a phoneme layer (AI/E/FV/L/MBP/O/U/WQ/etc labels, frame-accurate);
+    falls back to phonemizing a words/phrases layer within its timings."""
+    import xml.etree.ElementTree as ET
+
+    root = ET.fromstring(xml_text)
+    layers = []
+    for el in root.iter("EffectLayer"):
+        effs = []
+        for e in el.iter("Effect"):
+            label = (e.get("label") or "").strip()
+            if label and e.get("startTime") and e.get("endTime"):
+                effs.append((int(e.get("startTime")), int(e.get("endTime")), label))
+        if effs:
+            layers.append(effs)
+    if not layers:
+        raise RuntimeError("no labeled timing effects found in the xtiming file")
+
+    def vis_share(effs):
+        return sum(1 for _, _, l in effs if l.upper() in XT_VIS) / len(effs)
+
+    phoneme_layers = [L for L in layers if vis_share(L) > 0.8]
+    if phoneme_layers:  # authoritative: use it directly
+        track = ["REST"] * n_frames
+        for s, e, label in max(phoneme_layers, key=len):
+            name = XT_VIS.get(label.upper())
+            if not name:
+                continue
+            f0 = int(s / 1000 * FPS)
+            f1 = max(f0 + 1, int(e / 1000 * FPS))
+            for f in range(f0, min(f1, n_frames)):
+                track[f] = name
+        return track
+
+    # words (or phrases) layer: phonemize each label inside its window
+    from kokoro import KPipeline
+    g2p = KPipeline(lang_code="a", model=False)
+    effs = max(layers, key=len)          # densest layer = words
+    tokens = []
+    for s, e, label in effs:
+        tokens.extend(_spread_words(label, s / 1000, e / 1000, g2p))
+    if not tokens:
+        raise RuntimeError("could not phonemize any labels in the xtiming file")
+    return sprite_track(tokens, env, n_frames)
+
+
 def lyric_tokens(lrc_text, total_dur):
     """Parse '[mm:ss.xx] lyric line' text -> (start, end, phonemes) word tuples.
     Words in a line share its time window, weighted by phoneme count."""

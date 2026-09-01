@@ -22,7 +22,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 
 from pumpkin import FPS, STYLES, envelope, load_audio, tts
-from sprite import lyric_tokens, render_video, slice_sheet, slice_sheet_color, sprite_track
+from sprite import (lyric_tokens, render_video, slice_sheet, slice_sheet_color,
+                    sprite_track, xtiming_track)
 
 SHEETS = os.path.join(HERE, "sheets")
 RENDERS = os.path.join(HERE, "renders")
@@ -151,7 +152,11 @@ def render_song():
     spath = sheet_path(request.form["sheet"])
     style = request.form.get("style", "pumpkin")
     W, H = (int(v) for v in request.form.get("size", "1280x720").split("x"))
-    lrc = request.form["lyrics"]
+    lrc = request.form.get("lyrics", "")
+    xt_file = request.files.get("xtiming")
+    xt_xml = xt_file.read().decode("utf-8", "replace") if xt_file and xt_file.filename else None
+    if not xt_xml and not lrc.strip():
+        return jsonify({"error": "provide an xtiming file or timed lyrics"}), 400
     audio_file = request.files.get("audio")
     if not audio_file:
         return jsonify({"error": "no audio file"}), 400
@@ -165,7 +170,8 @@ def render_song():
 
     jid = uuid.uuid4().hex[:10]
     out = os.path.join(RENDERS, f"{jid}.mp4")
-    label = (lrc.strip().splitlines() or ["song"])[0][:60]
+    label = (xt_file.filename if xt_xml else
+             (lrc.strip().splitlines() or ["song"])[0])[:60]
     JOBS[jid] = {"status": "running", "progress": 0, "label": label,
                  "url": f"/renders/{jid}.mp4", "created": time.time()}
 
@@ -174,10 +180,13 @@ def render_song():
         dur = len(audio) / sr
         n = max(1, int(dur * FPS))
         env = envelope(audio, sr, n)
-        tokens = lyric_tokens(lrc, dur)
-        if not tokens:
-            raise RuntimeError("no timed lyric lines found — use [mm:ss.xx] Lyric text")
-        track = sprite_track(tokens, env, n)
+        if xt_xml:
+            track = xtiming_track(xt_xml, env, n)
+        else:
+            tokens = lyric_tokens(lrc, dur)
+            if not tokens:
+                raise RuntimeError("no timed lyric lines found — use [mm:ss.xx] Lyric text")
+            track = sprite_track(tokens, env, n)
         render_video(spath, track, env, wav, out, style, W, H, make_progress(jid))
 
     run_job(jid, work)

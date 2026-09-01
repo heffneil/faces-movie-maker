@@ -100,7 +100,11 @@
     <h2>Sing (audio + timed lyrics)</h2>
     <label>Audio file (mp3 / wav / m4a)</label>
     <input type="file" id="songFile" accept="audio/*,.mp3,.m4a,.wav">
-    <label>Lyrics with line timing</label>
+    <label>xLights timing track (.xtiming) — best sync</label>
+    <input type="file" id="xtFile" accept=".xtiming,.xml">
+    <div class="hint">A phoneme layer (AI/E/FV/… labels) drives mouths frame-accurately;
+      a words layer is phonemized inside each word's window.</div>
+    <label>…or lyrics with line timing</label>
     <textarea id="lyrics" placeholder="[00:01.2] I want it that way
 [00:05.8] Tell me why
 [00:09.0] Ain't nothin' but a heartache"></textarea>
@@ -218,6 +222,8 @@ document.getElementById('goSong').onclick = () => {
   if (!f) return alert('Choose an audio file');
   const fd = new FormData();
   fd.append('sheet', selSheet); fd.append('audio', f);
+  const xt = document.getElementById('xtFile').files[0];
+  if (xt) fd.append('xtiming', xt);
   fd.append('lyrics', document.getElementById('lyrics').value);
   fd.append('style', document.getElementById('style2').value);
   fd.append('size', document.getElementById('size2').value);

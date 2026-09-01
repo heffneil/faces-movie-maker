@@ -54,14 +54,17 @@ First run downloads the Kokoro TTS model (~300 MB) from HuggingFace.
 
 2. **Speak mode** — type text, pick a voice, render.
 
-3. **Sing mode** — upload audio (mp3/wav/m4a) and paste lyrics with line
-   timings; each line's words are spread across its window and the audio's
-   loudness gates the mouth:
+3. **Sing mode** — upload audio (mp3/wav/m4a) plus timing:
+   - **xLights `.xtiming` file** (best): a phoneme layer (AI/E/FV/L/MBP/O/U/WQ/etc
+     labels) drives the mouth frame-accurately; a words layer is phonemized
+     inside each word's window.
+   - **or timed lyric lines**; each line's words are spread across its window
+     and the audio's loudness gates the mouth:
 
-   ```
-   [00:01.2] I want it that way
-   [00:05.8] Tell me why
-   ```
+     ```
+     [00:01.2] I want it that way
+     [00:05.8] Tell me why
+     ```
 
 **Render styles**: `pumpkin` (glowing orange carve), `ghost` (white glow),
 `color` (keeps your sheet's original artwork).
