@@ -156,13 +156,13 @@ def slice_sheet_color(path, label_trim=0.16):
         fg = ndimage.binary_fill_holes(mask)
         alpha = ndimage.gaussian_filter(fg.astype(np.float32), 1.0)
         cells[name] = (cell * alpha[..., None] / 255.0, alpha)
-    # align on a common canvas by content bbox center
+    # rough placement on a common canvas by content bbox center
     boxes = {}
     for name, (rgb, a) in cells.items():
         ys, xs = np.where(a > 0.5)
         boxes[name] = (ys.min(), ys.max(), xs.min(), xs.max())
-    H = max(b[1] - b[0] for b in boxes.values()) + 41
-    W = max(b[3] - b[2] for b in boxes.values()) + 41
+    H = max(b[1] - b[0] for b in boxes.values()) + 81
+    W = max(b[3] - b[2] for b in boxes.values()) + 81
     out = {}
     for name, (rgb, a) in cells.items():
         y0, y1, x0, x1 = boxes[name]
@@ -172,6 +172,20 @@ def slice_sheet_color(path, label_trim=0.16):
         rgba[oy:oy + y1 - y0 + 1, ox:ox + x1 - x0 + 1, :3] = rgb[y0:y1 + 1, x0:x1 + 1]
         rgba[oy:oy + y1 - y0 + 1, ox:ox + x1 - x0 + 1, 3] = a[y0:y1 + 1, x0:x1 + 1]
         out[name] = rgba
+    # refine: register each sprite to REST on the head region (top 55%) so
+    # hard pose cuts don't make the head jitter (mouth changes move bboxes)
+    ref = out["REST"][:int(H * 0.55), :, 3][::2, ::2]
+    for name in SPRITE_NAMES:
+        if name == "REST":
+            continue
+        a = out[name][:int(H * 0.55), :, 3][::2, ::2]
+        best, bdy, bdx = -1.0, 0, 0
+        for dy in range(-8, 9):
+            for dx in range(-8, 9):
+                s = (np.roll(np.roll(a, dy, 0), dx, 1) * ref).sum()
+                if s > best:
+                    best, bdy, bdx = s, dy, dx
+        out[name] = np.roll(np.roll(out[name], bdy * 2, axis=0), bdx * 2, axis=1)
     return out
 
 
@@ -356,11 +370,10 @@ def render_video_color(sheet_path, track, env, wav_path, out_path,
          "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest",
          os.path.abspath(out_path)],
         stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    state = sprites["REST"].copy()
     e_smooth = np.convolve(env, np.ones(5) / 5, mode="same")
     for i, name in enumerate(track):
         wob = i / FPS * 2 * math.pi * 0.7
-        state = 0.55 * state + 0.45 * sprites[name]   # cross-dissolve morph
+        state = sprites[name]        # hard pose cut, like classic 2D lip sync
         stretch = 0.05 * e_smooth[i] + 0.012 * math.sin(wob * 1.1)
         frame = drift(compose_color(state, W, H, wob, stretch), wob)
         proc.stdin.write(frame.tobytes())
