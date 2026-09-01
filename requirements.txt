@@ -1,0 +1,7 @@
+numpy
+scipy
+pillow
+soundfile
+torch
+kokoro>=0.9
+flask

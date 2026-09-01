@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Talking Faces Studio</title>
+<style>
+  :root {
+    --bg: #0d0b12; --panel: #17131f; --panel2: #1e1828; --line: #2e2440;
+    --text: #e8e2f2; --dim: #9a8fae; --orange: #ff9a2a; --orange2: #ffb95e;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  header { padding: 22px 28px 10px; display: flex; align-items: baseline; gap: 14px; }
+  header h1 { margin: 0; font-size: 22px; letter-spacing: .5px; }
+  header h1 span { color: var(--orange); }
+  header small { color: var(--dim); }
+  main { display: grid; grid-template-columns: 320px 1fr 1fr; gap: 18px;
+         padding: 10px 28px 40px; align-items: start; }
+  @media (max-width: 1100px) { main { grid-template-columns: 1fr; } }
+  section { background: var(--panel); border: 1px solid var(--line);
+            border-radius: 14px; padding: 18px; }
+  h2 { margin: 0 0 12px; font-size: 15px; text-transform: uppercase;
+       letter-spacing: 1.5px; color: var(--orange); }
+  label { display: block; margin: 10px 0 4px; color: var(--dim); font-size: 13px; }
+  input[type=text], textarea, select {
+    width: 100%; background: var(--panel2); color: var(--text);
+    border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; font: inherit; }
+  textarea { min-height: 130px; font-family: ui-monospace, Menlo, monospace; font-size: 13px; }
+  button { background: var(--orange); color: #1a1005; border: 0; border-radius: 9px;
+           padding: 10px 18px; font: inherit; font-weight: 700; cursor: pointer; margin-top: 14px; }
+  button:hover { background: var(--orange2); }
+  button:disabled { opacity: .45; cursor: default; }
+  button.ghost { background: transparent; color: var(--dim); border: 1px solid var(--line);
+                 padding: 4px 10px; font-weight: 400; font-size: 12px; margin: 0; }
+  .sheet { display: flex; gap: 10px; align-items: center; padding: 8px; border-radius: 10px;
+           border: 2px solid transparent; cursor: pointer; }
+  .sheet:hover { background: var(--panel2); }
+  .sheet.sel { border-color: var(--orange); background: var(--panel2); }
+  .sheet img { width: 74px; height: 50px; object-fit: cover; border-radius: 6px; background: #fff; }
+  .sheet .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .drop { border: 2px dashed var(--line); border-radius: 10px; padding: 16px;
+          text-align: center; color: var(--dim); font-size: 13px; cursor: pointer; margin-top: 12px; }
+  .drop.hover { border-color: var(--orange); color: var(--orange); }
+  .row { display: flex; gap: 10px; }
+  .row > div { flex: 1; }
+  .job { margin-top: 14px; font-size: 13px; color: var(--dim); }
+  .bar { height: 8px; background: var(--panel2); border-radius: 5px; overflow: hidden; margin-top: 6px; }
+  .bar i { display: block; height: 100%; background: var(--orange); width: 0; transition: width .4s; }
+  #gallery { grid-column: 1 / -1; }
+  .vids { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
+  .vid { background: var(--panel2); border-radius: 10px; padding: 10px; }
+  .vid video { width: 100%; border-radius: 8px; background: #000; }
+  .vid p { margin: 8px 0 2px; font-size: 13px; color: var(--dim);
+           overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hint { font-size: 12px; color: var(--dim); margin-top: 6px; }
+  .err { color: #ff7a7a; font-size: 13px; margin-top: 10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🎃 Talking Faces <span>Studio</span></h1>
+  <small>phoneme sheets → glowing projection videos</small>
+</header>
+<main>
+  <section id="library">
+    <h2>Face Library</h2>
+    <div id="sheets"></div>
+    <div class="drop" id="drop">Drop a 3×3 phoneme sheet here<br>or click to choose
+      <input type="file" id="sheetFile" accept="image/*" hidden>
+    </div>
+    <div class="err" id="sheetErr"></div>
+  </section>
+
+  <section>
+    <h2>Speak (text → voice)</h2>
+    <label>What should it say?</label>
+    <textarea id="ttsText" placeholder="Trick or treat! Enter if you dare..."></textarea>
+    <div class="row">
+      <div><label>Voice</label>
+        <select id="voice">
+          <option value="am_michael">Michael (US male)</option>
+          <option value="am_adam">Adam (US male)</option>
+          <option value="af_heart">Heart (US female)</option>
+          <option value="af_bella">Bella (US female)</option>
+          <option value="bm_george">George (UK male)</option>
+          <option value="bf_emma">Emma (UK female)</option>
+        </select></div>
+      <div><label>Style</label>
+        <select id="style1"><option>pumpkin</option><option>ghost</option><option>color</option></select></div>
+      <div><label>Size</label>
+        <select id="size1"><option>1280x720</option><option selected>1920x1080</option></select></div>
+    </div>
+    <button id="goTts">Render</button>
+    <div class="job" id="job1"></div>
+  </section>
+
+  <section>
+    <h2>Sing (audio + timed lyrics)</h2>
+    <label>Audio file (mp3 / wav / m4a)</label>
+    <input type="file" id="songFile" accept="audio/*,.mp3,.m4a,.wav">
+    <label>Lyrics with line timing</label>
+    <textarea id="lyrics" placeholder="[00:01.2] I want it that way
+[00:05.8] Tell me why
+[00:09.0] Ain't nothin' but a heartache"></textarea>
+    <div class="hint">One line per lyric: <b>[mm:ss.x]</b> then the words. Each line's
+      words are spread across its time window; the mouth still closes in silence.</div>
+    <div class="row">
+      <div><label>Style</label>
+        <select id="style2"><option>pumpkin</option><option>ghost</option><option>color</option></select></div>
+      <div><label>Size</label>
+        <select id="size2"><option>1280x720</option><option selected>1920x1080</option></select></div>
+    </div>
+    <button id="goSong">Render</button>
+    <div class="job" id="job2"></div>
+  </section>
+
+  <section id="gallery">
+    <h2>Renders</h2>
+    <div class="vids" id="vids"></div>
+  </section>
+</main>
+<div id="modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.82);
+     z-index:50; align-items:center; justify-content:center; flex-direction:column; gap:10px; cursor:zoom-out"
+     onclick="this.style.display='none'">
+  <img id="modalImg" style="max-width:92vw; max-height:86vh; border-radius:12px; background:#fff">
+  <div id="modalCap" style="color:var(--dim)"></div>
+</div>
+<script>
+let selSheet = localStorage.getItem('sheet') || null;
+
+async function loadSheets() {
+  const r = await fetch('/api/sheets'); const list = await r.json();
+  if (list.length && !list.find(s => s.id === selSheet)) selSheet = list[0].id;
+  document.getElementById('sheets').innerHTML = list.map(s => `
+    <div class="sheet ${s.id===selSheet?'sel':''}" onclick="pick('${s.id}')">
+      <img src="/sheets/${s.file}" onclick="event.stopPropagation();zoom('/sheets/${s.file}','${s.name.replace(/'/g,"\\'")}')" title="Click to enlarge">
+      <span class="nm">${s.name}</span>
+      <button class="ghost" title="Rename" onclick="event.stopPropagation();ren('${s.id}','${s.name.replace(/'/g,"\\'")}')">✎</button>
+      <button class="ghost" title="Delete" onclick="event.stopPropagation();del('${s.id}')">✕</button>
+    </div>`).join('') || '<div class="hint">No faces yet — upload one below.</div>';
+}
+function pick(id){ selSheet=id; localStorage.setItem('sheet',id); loadSheets(); }
+async function del(id){ if(confirm('Delete this face?')){ await fetch('/api/sheets/'+id,{method:'DELETE'}); loadSheets(); } }
+async function ren(id, cur){
+  const name = prompt('Rename face:', cur);
+  if (name && name !== cur)
+    await fetch('/api/sheets/'+id, {method:'PATCH',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify({name})});
+  loadSheets();
+}
+function zoom(src, name){
+  const m = document.getElementById('modal');
+  document.getElementById('modalImg').src = src;
+  document.getElementById('modalCap').textContent = name;
+  m.style.display = 'flex';
+}
+
+const drop = document.getElementById('drop'), sf = document.getElementById('sheetFile');
+drop.onclick = () => sf.click();
+drop.ondragover = e => { e.preventDefault(); drop.classList.add('hover'); };
+drop.ondragleave = () => drop.classList.remove('hover');
+drop.ondrop = e => { e.preventDefault(); drop.classList.remove('hover');
+                     if (e.dataTransfer.files[0]) upSheet(e.dataTransfer.files[0]); };
+sf.onchange = () => sf.files[0] && upSheet(sf.files[0]);
+async function upSheet(file) {
+  const name = prompt('Name this face:', file.name.replace(/\.\w+$/,'')) || file.name;
+  const fd = new FormData(); fd.append('file', file); fd.append('name', name);
+  const r = await fetch('/api/sheets', {method:'POST', body:fd}); const j = await r.json();
+  document.getElementById('sheetErr').textContent = j.error || '';
+  if (!j.error) { selSheet = j.id; localStorage.setItem('sheet', j.id); }
+  loadSheets();
+}
+
+function watch(jid, el, btn) {
+  const t = setInterval(async () => {
+    const j = await (await fetch('/api/jobs/'+jid)).json();
+    if (j.status === 'running')
+      el.innerHTML = `rendering… ${j.progress}%<div class="bar"><i style="width:${j.progress}%"></i></div>`;
+    else {
+      clearInterval(t); btn.disabled = false;
+      el.innerHTML = j.status === 'done' ? '✅ done' : `<span class="err">${j.error||'failed'}</span>`;
+      loadRenders();
+    }
+  }, 800);
+}
+
+document.getElementById('goTts').onclick = async () => {
+  if (!selSheet) return alert('Upload/select a face first');
+  const btn = document.getElementById('goTts'); btn.disabled = true;
+  const r = await fetch('/api/render/tts', {method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({sheet: selSheet, text: document.getElementById('ttsText').value,
+      voice: document.getElementById('voice').value,
+      style: document.getElementById('style1').value, size: document.getElementById('size1').value})});
+  const j = await r.json();
+  if (j.error) { btn.disabled=false; return document.getElementById('job1').innerHTML=`<span class="err">${j.error}</span>`; }
+  watch(j.job, document.getElementById('job1'), btn);
+};
+
+document.getElementById('goSong').onclick = async () => {
+  if (!selSheet) return alert('Upload/select a face first');
+  const f = document.getElementById('songFile').files[0];
+  if (!f) return alert('Choose an audio file');
+  const btn = document.getElementById('goSong'); btn.disabled = true;
+  const fd = new FormData();
+  fd.append('sheet', selSheet); fd.append('audio', f);
+  fd.append('lyrics', document.getElementById('lyrics').value);
+  fd.append('style', document.getElementById('style2').value);
+  fd.append('size', document.getElementById('size2').value);
+  const r = await fetch('/api/render/song', {method:'POST', body:fd});
+  const j = await r.json();
+  if (j.error) { btn.disabled=false; return document.getElementById('job2').innerHTML=`<span class="err">${j.error}</span>`; }
+  watch(j.job, document.getElementById('job2'), btn);
+};
+
+async function loadRenders() {
+  const list = await (await fetch('/api/renders')).json();
+  document.getElementById('vids').innerHTML = list.map(v => `
+    <div class="vid"><video src="${v.url}" controls preload="metadata"></video>
+      <p>${v.label}</p>
+      <a class="hint" href="${v.url}" download>download</a></div>`).join('')
+    || '<div class="hint">Rendered videos appear here.</div>';
+}
+loadSheets(); loadRenders();
+</script>
+</body>
+</html>

@@ -1,0 +1,28 @@
+# environments & third-party code
+.venv/
+SadTalker/
+__pycache__/
+*.pyc
+
+# models / large artifacts
+checkpoints/
+gfpgan/
+
+# user content & outputs (never commit personal media)
+webapp/sheets/*
+webapp/renders/*
+webapp/uploads/*
+!webapp/sheets/.gitkeep
+!webapp/renders/.gitkeep
+!webapp/uploads/.gitkeep
+*.mp4
+*.wav
+*.mp3
+*.png
+*.jpg
+*.jpeg
+*.heic
+
+# scratch
+reqs.txt
+.DS_Store
