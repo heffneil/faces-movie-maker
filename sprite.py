@@ -314,8 +314,10 @@ def xtiming_track(xml_text, env, n_frames):
         effs = []
         for e in el.iter("Effect"):
             label = (e.get("label") or "").strip()
-            if label and e.get("startTime") and e.get("endTime"):
-                effs.append((int(e.get("startTime")), int(e.get("endTime")), label))
+            s = e.get("startTime") or e.get("starttime")   # attr case varies by version
+            t = e.get("endTime") or e.get("endtime")
+            if label and s and t:
+                effs.append((int(s), int(t), label))
         if effs:
             layers.append(effs)
     if not layers:
