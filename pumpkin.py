@@ -49,16 +49,28 @@ def tts(text, voice, wav_path):
     import soundfile as sf
     from kokoro import KPipeline
 
+    import re
+
     pipeline = KPipeline(lang_code=voice[0])
     chunks, tokens, offset = [], [], 0.0
-    for r in pipeline(text, voice=voice):
-        if r.audio is None or len(r.audio) == 0:   # empty segment (odd punctuation)
+    # 2+ consecutive spaces = explicit silence (~0.35s per extra space);
+    # commas/periods already give Kokoro's natural short pauses
+    for part in re.split(r"( {2,}|\n{2,})", text):
+        if re.fullmatch(r" {2,}|\n{2,}", part or ""):
+            dur = 0.35 * (len(part) - 1)
+            chunks.append(np.zeros(int(dur * 24000), dtype=np.float32))
+            offset += dur
             continue
-        chunks.append(r.audio)
-        for t in (getattr(r, "tokens", None) or []):
-            if t.start_ts is not None and t.end_ts is not None and t.phonemes:
-                tokens.append((offset + t.start_ts, offset + t.end_ts, t.phonemes))
-        offset += len(r.audio) / 24000
+        if not (part or "").strip():
+            continue
+        for r in pipeline(part, voice=voice):
+            if r.audio is None or len(r.audio) == 0:   # empty segment (odd punctuation)
+                continue
+            chunks.append(np.asarray(r.audio, dtype=np.float32))
+            for t in (getattr(r, "tokens", None) or []):
+                if t.start_ts is not None and t.end_ts is not None and t.phonemes:
+                    tokens.append((offset + t.start_ts, offset + t.end_ts, t.phonemes))
+            offset += len(r.audio) / 24000
     if not chunks:
         raise RuntimeError("TTS produced no audio — check the text")
     audio = np.concatenate(chunks)

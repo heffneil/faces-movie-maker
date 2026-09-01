@@ -1,0 +1,17 @@
+services:
+  studio:
+    build: .
+    image: faces-movie-maker
+    container_name: faces-movie-maker
+    restart: unless-stopped
+    ports:
+      - "5173:5173"
+    environment:
+      - HOST=0.0.0.0
+    volumes:
+      # DATA_DIR: host dir for user content (sheets, renders, uploads, model cache).
+      # Defaults to ./data for local dev; on node7 set DATA_DIR in .env to /mnt/nvmedisk.
+      - ${DATA_DIR:-./data}/sheets:/app/webapp/sheets
+      - ${DATA_DIR:-./data}/renders:/app/webapp/renders
+      - ${DATA_DIR:-./data}/uploads:/app/webapp/uploads
+      - ${DATA_DIR:-./data}/cache:/cache

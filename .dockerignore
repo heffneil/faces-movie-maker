@@ -1,0 +1,14 @@
+.venv
+SadTalker
+checkpoints
+gfpgan
+webapp/sheets
+webapp/renders
+webapp/uploads
+*.mp4
+*.wav
+*.png
+*.jpg
+*.jpeg
+.git
+__pycache__
