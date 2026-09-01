@@ -175,7 +175,9 @@ async function upSheet(file) {
 
 function watch(jid, el, btn) {
   const t = setInterval(async () => {
-    const j = await (await fetch('/api/jobs/'+jid)).json();
+    let j;
+    try { j = await (await fetch('/api/jobs/'+jid)).json(); }
+    catch (e) { el.textContent = 'server unreachable, retrying…'; return; }
     if (j.status === 'running')
       el.innerHTML = `rendering… ${j.progress}%<div class="bar"><i style="width:${j.progress}%"></i></div>`;
     else {
@@ -186,33 +188,41 @@ function watch(jid, el, btn) {
   }, 800);
 }
 
-document.getElementById('goTts').onclick = async () => {
+async function startRender(btn, jobEl, req) {
+  btn.disabled = true;
+  jobEl.textContent = 'starting…';
+  try {
+    const r = await fetch(...req);
+    const j = await r.json();
+    if (j.error) throw new Error(j.error);
+    watch(j.job, jobEl, btn);
+  } catch (e) {
+    btn.disabled = false;
+    jobEl.innerHTML = `<span class="err">${e.message === 'Failed to fetch'
+      ? 'Can’t reach the server — is it running?' : e.message}</span>`;
+  }
+}
+
+document.getElementById('goTts').onclick = () => {
   if (!selSheet) return alert('Upload/select a face first');
-  const btn = document.getElementById('goTts'); btn.disabled = true;
-  const r = await fetch('/api/render/tts', {method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({sheet: selSheet, text: document.getElementById('ttsText').value,
-      voice: document.getElementById('voice').value,
-      style: document.getElementById('style1').value, size: document.getElementById('size1').value})});
-  const j = await r.json();
-  if (j.error) { btn.disabled=false; return document.getElementById('job1').innerHTML=`<span class="err">${j.error}</span>`; }
-  watch(j.job, document.getElementById('job1'), btn);
+  startRender(document.getElementById('goTts'), document.getElementById('job1'),
+    ['/api/render/tts', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({sheet: selSheet, text: document.getElementById('ttsText').value,
+        voice: document.getElementById('voice').value,
+        style: document.getElementById('style1').value, size: document.getElementById('size1').value})}]);
 };
 
-document.getElementById('goSong').onclick = async () => {
+document.getElementById('goSong').onclick = () => {
   if (!selSheet) return alert('Upload/select a face first');
   const f = document.getElementById('songFile').files[0];
   if (!f) return alert('Choose an audio file');
-  const btn = document.getElementById('goSong'); btn.disabled = true;
   const fd = new FormData();
   fd.append('sheet', selSheet); fd.append('audio', f);
   fd.append('lyrics', document.getElementById('lyrics').value);
   fd.append('style', document.getElementById('style2').value);
   fd.append('size', document.getElementById('size2').value);
-  const r = await fetch('/api/render/song', {method:'POST', body:fd});
-  const j = await r.json();
-  if (j.error) { btn.disabled=false; return document.getElementById('job2').innerHTML=`<span class="err">${j.error}</span>`; }
-  watch(j.job, document.getElementById('job2'), btn);
+  startRender(document.getElementById('goSong'), document.getElementById('job2'),
+    ['/api/render/song', {method:'POST', body: fd}]);
 };
 
 async function loadRenders() {

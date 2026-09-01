@@ -52,11 +52,15 @@ def tts(text, voice, wav_path):
     pipeline = KPipeline(lang_code=voice[0])
     chunks, tokens, offset = [], [], 0.0
     for r in pipeline(text, voice=voice):
+        if r.audio is None or len(r.audio) == 0:   # empty segment (odd punctuation)
+            continue
         chunks.append(r.audio)
         for t in (getattr(r, "tokens", None) or []):
-            if t.start_ts is not None and t.phonemes:
+            if t.start_ts is not None and t.end_ts is not None and t.phonemes:
                 tokens.append((offset + t.start_ts, offset + t.end_ts, t.phonemes))
         offset += len(r.audio) / 24000
+    if not chunks:
+        raise RuntimeError("TTS produced no audio — check the text")
     audio = np.concatenate(chunks)
     sf.write(wav_path, audio, 24000)
     return audio, tokens

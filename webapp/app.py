@@ -186,7 +186,12 @@ def render_song():
 
 @app.get("/api/jobs/<jid>")
 def job_status(jid):
-    return jsonify(JOBS.get(jid, {"status": "unknown"}))
+    if jid in JOBS:
+        return jsonify(JOBS[jid])
+    # server restarted mid-poll: report done if the file made it to disk
+    if os.path.exists(os.path.join(RENDERS, f"{jid}.mp4")):
+        return jsonify({"status": "done", "progress": 100, "url": f"/renders/{jid}.mp4"})
+    return jsonify({"status": "error", "error": "job lost (server restarted) — render again"})
 
 
 @app.get("/api/renders")
