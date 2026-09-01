@@ -175,6 +175,21 @@ def slice_sheet_color(path, label_trim=0.16):
     return out
 
 
+def drift(frame, wob):
+    """Continuous sub-pixel drift + slight rotation so every frame moves
+    smoothly (integer-pixel wobble makes held poses look frozen/steppy)."""
+    from PIL import Image
+    W, H = frame.size
+    dx = 5.0 * math.sin(wob * 1.3)
+    dy = 4.0 * math.sin(wob * 0.9 + 2)
+    ang = 0.010 * math.sin(wob * 0.63)          # ~0.6 degrees
+    cos, sin = math.cos(ang), math.sin(ang)
+    cx, cy = W / 2 + dx, H / 2 + dy
+    coeffs = (cos, sin, -cos * cx - sin * cy + W / 2,
+              -sin, cos, sin * cx - cos * cy + H / 2)
+    return frame.transform((W, H), Image.AFFINE, coeffs, resample=Image.BILINEAR)
+
+
 def compose_color(state, W, H, wob, stretch):
     """Premultiplied RGBA float array -> full frame over black."""
     from PIL import Image
@@ -186,8 +201,8 @@ def compose_color(state, W, H, wob, stretch):
     img = Image.fromarray((np.clip(state[..., :3], 0, 1) * 255).astype(np.uint8))
     img = img.resize((tw, th), Image.LANCZOS)  # premultiplied: over black as-is
     frame = Image.new("RGB", (W, H), (0, 0, 0))
-    dx = int(6 * math.sin(wob * 1.3)) + (W - tw) // 2
-    dy = int(5 * math.sin(wob * 0.9 + 2)) + (H - th) // 2
+    dx = (W - tw) // 2
+    dy = (H - th) // 2
     frame.paste(img, (dx, dy))
     return frame
 
@@ -239,8 +254,8 @@ def colorize(field, style, W, H, wob, stretch=0.0):
     # distance units are source pixels; feather ~2 output pixels
     alpha = np.clip(0.5 - np.asarray(big) * scale / 2.0, 0.0, 1.0)
     m = Image.fromarray((alpha * 255).astype(np.uint8))
-    dx = int(6 * math.sin(wob * 1.3)) + (W - m.width) // 2
-    dy = int(5 * math.sin(wob * 0.9 + 2)) + (H - m.height) // 2
+    dx = (W - m.width) // 2
+    dy = (H - m.height) // 2
     full = Image.new("L", (W, H), 0)
     full.paste(m, (dx, dy))
 
@@ -322,7 +337,7 @@ def render_video(sheet_path, track, env, wav_path, out_path, style="pumpkin",
         state = 0.62 * state + 0.38 * fields[name]   # eased morph toward target
         shown = apply_blink(state, boxes, blink_f[i]) if blink_f[i] < 1 else state
         stretch = 0.05 * e_smooth[i] + 0.012 * math.sin(wob * 1.1)
-        frame = colorize(shown, style, W, H, wob, stretch)
+        frame = drift(colorize(shown, style, W, H, wob, stretch), wob)
         proc.stdin.write(frame.tobytes())
         if progress:
             progress(i + 1, len(track))
@@ -347,7 +362,7 @@ def render_video_color(sheet_path, track, env, wav_path, out_path,
         wob = i / FPS * 2 * math.pi * 0.7
         state = 0.55 * state + 0.45 * sprites[name]   # cross-dissolve morph
         stretch = 0.05 * e_smooth[i] + 0.012 * math.sin(wob * 1.1)
-        frame = compose_color(state, W, H, wob, stretch)
+        frame = drift(compose_color(state, W, H, wob, stretch), wob)
         proc.stdin.write(frame.tobytes())
         if progress:
             progress(i + 1, len(track))
