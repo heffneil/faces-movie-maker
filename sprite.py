@@ -487,9 +487,23 @@ def render_video_color(sheet_path, track, env, wav_path, out_path,
          os.path.abspath(out_path)],
         stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     e_smooth = np.convolve(env, np.ones(5) / 5, mode="same")
+    # short completing transitions: T in-between frames easing into each new
+    # pose (reads as a smear frame), then the pure pose — unlike a continuous
+    # dissolve, it never lingers on a two-mouth blend
+    T = 3   # w hits 0.25, 0.75, then 1.0 -> two in-between frames per change
+    cur, t_in = track[0], T
+    state = sprites[cur].copy()
+    from_state = state
     for i, name in enumerate(track):
         wob = i / FPS * 2 * math.pi * 0.7
-        state = sprites[name]        # hard pose cut, like classic 2D lip sync
+        if name != cur:
+            from_state, cur, t_in = state, name, 0
+        if t_in < T:
+            t_in += 1
+            w = 0.5 - 0.5 * math.cos(math.pi * t_in / T)   # eased 0..1
+            state = (1 - w) * from_state + w * sprites[cur]
+        else:
+            state = sprites[cur]
         stretch = 0.05 * e_smooth[i] + 0.012 * math.sin(wob * 1.1)
         frame = drift(compose_color(state, W, H, wob, stretch), wob)
         proc.stdin.write(frame.tobytes())
