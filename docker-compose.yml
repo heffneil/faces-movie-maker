@@ -8,6 +8,10 @@ services:
       - "5173:5173"
     environment:
       - HOST=0.0.0.0
+      # AutoLyrixAlign service on the same host (xlight-autosequencer aligner)
+      - ALIGNER_URL=${ALIGNER_URL:-http://host.docker.internal:3001}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       # DATA_DIR: host dir for user content (sheets, renders, uploads, model cache).
       # Defaults to ./data for local dev; on node7 set DATA_DIR in .env to /mnt/nvmedisk.

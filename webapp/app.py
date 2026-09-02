@@ -22,8 +22,33 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 
 from pumpkin import FPS, STYLES, envelope, load_audio, tts
-from sprite import (lyric_tokens, render_video, slice_sheet, slice_sheet_color,
-                    sprite_track, xtiming_track)
+from sprite import (aligned_word_tokens, lyric_tokens, render_video, slice_sheet,
+                    slice_sheet_color, sprite_track, words_to_xtiming, xtiming_track)
+
+# AutoLyrixAlign service (runs on node7; see xlight-autosequencer/deploy/aligner)
+ALIGNER_URL = os.environ.get("ALIGNER_URL", "http://172.16.0.127:3001")
+
+
+def align_lyrics(audio_path, lyrics):
+    """POST audio+lyrics to the aligner; returns [{label,start_ms,end_ms}]."""
+    import base64
+    import urllib.request
+
+    body = json.dumps({
+        "lyrics": lyrics,
+        "audio_b64": base64.b64encode(open(audio_path, "rb").read()).decode(),
+    }).encode()
+    req = urllib.request.Request(ALIGNER_URL.rstrip("/") + "/align", data=body,
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=1800) as r:
+            out = json.load(r)
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")[:300]
+        raise RuntimeError(f"aligner returned {e.code}: {detail}") from None
+    if "words" not in out:
+        raise RuntimeError(f"aligner error: {out}")
+    return out["words"]
 
 SHEETS = os.path.join(HERE, "sheets")
 RENDERS = os.path.join(HERE, "renders")
@@ -175,6 +200,8 @@ def render_song():
     JOBS[jid] = {"status": "running", "progress": 0, "label": label,
                  "url": f"/renders/{jid}.mp4", "created": time.time()}
 
+    auto_align = request.form.get("align") == "1"
+
     def work():
         audio, sr = load_audio(wav)
         dur = len(audio) / sr
@@ -182,10 +209,20 @@ def render_song():
         env = envelope(audio, sr, n)
         if xt_xml:
             track = xtiming_track(xt_xml, env, n)
+        elif auto_align:
+            JOBS[jid]["stage"] = "aligning lyrics on node7 (~2 min per song)…"
+            words = align_lyrics(raw, lrc)
+            JOBS[jid]["stage"] = "building timing…"
+            with open(os.path.join(RENDERS, f"{jid}.xtiming"), "w") as fh:
+                fh.write(words_to_xtiming(words, label))
+            JOBS[jid]["xtiming"] = f"/renders/{jid}.xtiming"
+            track = sprite_track(aligned_word_tokens(words), env, n)
+            JOBS[jid]["stage"] = None
         else:
             tokens = lyric_tokens(lrc, dur)
             if not tokens:
-                raise RuntimeError("no timed lyric lines found — use [mm:ss.xx] Lyric text")
+                raise RuntimeError("no timed lyric lines found — use [mm:ss.xx] "
+                                   "Lyric text, or check Auto-align")
             track = sprite_track(tokens, env, n)
         render_video(spath, track, env, wav, out, style, W, H, make_progress(jid))
 
@@ -210,8 +247,11 @@ def list_renders():
         if f.endswith(".mp4"):
             jid = f[:-4]
             meta = JOBS.get(jid, {})
-            out.append({"url": f"/renders/{f}", "label": meta.get("label", f),
-                        "mtime": os.path.getmtime(os.path.join(RENDERS, f))})
+            row = {"url": f"/renders/{f}", "label": meta.get("label", f),
+                   "mtime": os.path.getmtime(os.path.join(RENDERS, f))}
+            if os.path.exists(os.path.join(RENDERS, f"{jid}.xtiming")):
+                row["xtiming"] = f"/renders/{jid}.xtiming"
+            out.append(row)
     return jsonify(out)
 
 

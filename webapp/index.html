@@ -106,12 +106,17 @@
     <input type="file" id="xtFile" accept=".xtiming,.xml">
     <div class="hint">A phoneme layer (AI/E/FV/… labels) drives mouths frame-accurately;
       a words layer is phonemized inside each word's window.</div>
-    <label>…or lyrics with line timing</label>
-    <textarea id="lyrics" placeholder="[00:01.2] I want it that way
-[00:05.8] Tell me why
-[00:09.0] Ain't nothin' but a heartache"></textarea>
-    <div class="hint">One line per lyric: <b>[mm:ss.x]</b> then the words. Each line's
-      words are spread across its time window; the mouth still closes in silence.</div>
+    <label>…or lyrics</label>
+    <textarea id="lyrics" placeholder="I want it that way
+Tell me why
+Ain't nothin' but a heartache"></textarea>
+    <label style="display:flex; gap:8px; align-items:center; cursor:pointer">
+      <input type="checkbox" id="autoAlign" checked style="width:auto">
+      Auto-align plain lyrics to the song (aligner on node7, ~2 min/song) —
+      also gives you the .xtiming back
+    </label>
+    <div class="hint">Uncheck to use manual line timing instead: start each lyric
+      line with <b>[mm:ss.x]</b>.</div>
     <div class="row">
       <div><label>Style</label>
         <select id="style2"><option>pumpkin</option><option>ghost</option><option>color</option></select></div>
@@ -185,7 +190,7 @@ function watch(jid, el, btn) {
     try { j = await (await fetch('/api/jobs/'+jid)).json(); }
     catch (e) { el.textContent = 'server unreachable, retrying…'; return; }
     if (j.status === 'running')
-      el.innerHTML = `rendering… ${j.progress}%<div class="bar"><i style="width:${j.progress}%"></i></div>`;
+      el.innerHTML = `${j.stage || `rendering… ${j.progress}%`}<div class="bar"><i style="width:${j.progress}%"></i></div>`;
     else {
       clearInterval(t); btn.disabled = false;
       el.innerHTML = j.status === 'done' ? '✅ done' : `<span class="err">${j.error||'failed'}</span>`;
@@ -227,6 +232,7 @@ document.getElementById('goSong').onclick = () => {
   const xt = document.getElementById('xtFile').files[0];
   if (xt) fd.append('xtiming', xt);
   fd.append('lyrics', document.getElementById('lyrics').value);
+  if (document.getElementById('autoAlign').checked && !xt) fd.append('align', '1');
   fd.append('style', document.getElementById('style2').value);
   fd.append('size', document.getElementById('size2').value);
   startRender(document.getElementById('goSong'), document.getElementById('job2'),
@@ -238,7 +244,8 @@ async function loadRenders() {
   document.getElementById('vids').innerHTML = list.map(v => `
     <div class="vid"><video src="${v.url}" controls preload="metadata"></video>
       <p>${v.label}</p>
-      <a class="hint" href="${v.url}" download>download</a></div>`).join('')
+      <a class="hint" href="${v.url}" download>download video</a>
+      ${v.xtiming ? ` &nbsp;·&nbsp; <a class="hint" href="${v.xtiming}" download>download .xtiming</a>` : ''}</div>`).join('')
     || '<div class="hint">Rendered videos appear here.</div>';
 }
 loadSheets(); loadRenders();

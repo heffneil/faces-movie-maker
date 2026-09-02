@@ -351,6 +351,54 @@ def xtiming_track(xml_text, env, n_frames):
     return sprite_track(tokens, env, n_frames)
 
 
+def aligned_word_tokens(words):
+    """Aligner output [{label,start_ms,end_ms}] -> (start, end, phonemes) tuples."""
+    from kokoro import KPipeline
+    g2p = KPipeline(lang_code="a", model=False)
+    tokens = []
+    for w in words:
+        tokens.extend(_spread_words(w["label"], w["start_ms"] / 1000,
+                                    w["end_ms"] / 1000, g2p))
+    return tokens
+
+
+def words_to_xtiming(words, name="lyrics"):
+    """Aligner word timings -> xLights .xtiming XML (words + phoneme layers)."""
+    from xml.sax.saxutils import quoteattr
+    from kokoro import KPipeline
+    g2p = KPipeline(lang_code="a", model=False)
+
+    word_fx, ph_fx = [], []
+    for w in words:
+        s, e = int(w["start_ms"]), int(w["end_ms"])
+        word_fx.append((s, e, w["label"]))
+        for t0, t1, phonemes in _spread_words(w["label"], s / 1000, e / 1000, g2p):
+            # collapse each word's phonemes into Papagayo viseme segments
+            ph = [c for c in phonemes if c not in SKIP]
+            if not ph:
+                continue
+            dur = (t1 - t0) / len(ph)
+            segs = []
+            for k, c in enumerate(ph):
+                lab = PH2SPRITE.get(c, "REST")
+                lab = "etc" if lab == "REST" else lab
+                if segs and segs[-1][2] == lab:
+                    segs[-1] = (segs[-1][0], t0 + (k + 1) * dur, lab)
+                else:
+                    segs.append((t0 + k * dur, t0 + (k + 1) * dur, lab))
+            ph_fx.extend((int(a * 1000), int(b * 1000), lab) for a, b, lab in segs)
+
+    def layer(effects):
+        rows = "".join(
+            f'      <Effect label={quoteattr(l)} starttime="{s}" endtime="{e}"/>\n'
+            for s, e, l in effects)
+        return f"   <EffectLayer>\n{rows}   </EffectLayer>\n"
+
+    return (f'<?xml version="1.0" encoding="UTF-8"?>\n'
+            f'<timing name={quoteattr(name)} SourceVersion="faces-movie-maker">\n'
+            f"{layer(word_fx)}{layer(ph_fx)}</timing>\n")
+
+
 def lyric_tokens(lrc_text, total_dur):
     """Parse '[mm:ss.xx] lyric line' text -> (start, end, phonemes) word tuples.
     Words in a line share its time window, weighted by phoneme count."""
