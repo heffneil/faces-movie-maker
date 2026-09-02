@@ -204,6 +204,83 @@ def drift(frame, wob):
     return frame.transform((W, H), Image.AFFINE, coeffs, resample=Image.BILINEAR)
 
 
+class RegionMorpher:
+    """True in-betweens for flat cartoon art. Per pose PAIR, the area that
+    actually differs (the mouth) is decomposed into k flat-color layers whose
+    SHAPES are interpolated via signed distance fields and repainted, then
+    feathered into a plain blend of the rest — real intermediate mouths."""
+
+    def __init__(self, sprites, k=5, seed=7):
+        self.sprites = {n: np.clip(s, 0, 1).astype(np.float32)
+                        for n, s in sprites.items()}
+        self.k, self.rng = k, np.random.RandomState(seed)
+        self.cache = {}
+
+    def _setup(self, a, b):
+        from scipy import ndimage
+
+        A, B = self.sprites[a][..., :3], self.sprites[b][..., :3]
+        diff = ndimage.binary_opening(np.abs(A - B).max(-1) > 0.12, iterations=2)
+        if not diff.any():
+            return None
+        grown = ndimage.binary_dilation(diff, iterations=5)
+        lab, n = ndimage.label(grown)
+        sizes = ndimage.sum(grown, lab, range(1, n + 1))
+        keep = np.isin(lab, [i + 1 for i in range(n) if sizes[i] > sizes.max() * 0.3])
+        soft = ndimage.gaussian_filter(keep.astype(np.float32), 3)
+        ys, xs = np.where(keep)
+        pad = 6
+        y0, y1 = max(0, ys.min() - pad), min(A.shape[0], ys.max() + pad)
+        x0, x1 = max(0, xs.min() - pad), min(A.shape[1], xs.max() + pad)
+        ra, rb, sm = A[y0:y1, x0:x1], B[y0:y1, x0:x1], soft[y0:y1, x0:x1]
+
+        px = np.concatenate([ra[sm > 0.5], rb[sm > 0.5]])
+        sample = px[self.rng.choice(len(px), min(15000, len(px)), replace=False)]
+        cent = sample[self.rng.choice(len(sample), self.k, replace=False)]
+        for _ in range(12):
+            d = ((sample[:, None] - cent[None]) ** 2).sum(-1)
+            lb = d.argmin(1)
+            for c in range(self.k):
+                if (lb == c).any():
+                    cent[c] = sample[lb == c].mean(0)
+
+        def fields(img):
+            lb = ((img[..., None, :] - cent[None, None]) ** 2).sum(-1).argmin(-1)
+            fs = []
+            for c in range(self.k):
+                m = lb == c
+                if m.any() and (~m).any():
+                    fs.append(np.clip(ndimage.distance_transform_edt(~m)
+                                      - ndimage.distance_transform_edt(m),
+                                      -20, 20).astype(np.float32))
+                else:
+                    fs.append(np.full(m.shape, 20.0 if not m.any() else -20.0,
+                                      np.float32))
+            return fs
+
+        order = np.argsort([-(((ra[..., None, :] - cent[None, None]) ** 2)
+                              .sum(-1).argmin(-1) == c).sum() for c in range(self.k)])
+        return ((y0, y1, x0, x1), sm[..., None], cent, fields(ra), fields(rb), order)
+
+    def frame(self, a, b, w):
+        """Premultiplied RGBA canvas of pose a->b at weight w (real shapes)."""
+        out = (1 - w) * self.sprites[a] + w * self.sprites[b]
+        if (a, b) not in self.cache:
+            self.cache[(a, b)] = self._setup(a, b)
+        pair = self.cache[(a, b)]
+        if pair is None:
+            return out
+        (y0, y1, x0, x1), soft, colors, fa, fb, order = pair
+        reg = out[y0:y1, x0:x1, :3].copy()
+        paint = np.zeros_like(reg)
+        for c in order:
+            f = (1 - w) * fa[c] + w * fb[c]
+            alpha = np.clip(0.5 - f / 1.5, 0, 1)[..., None]
+            paint = paint * (1 - alpha) + colors[c] * alpha
+        out[y0:y1, x0:x1, :3] = reg * (1 - soft) + paint * soft
+        return out
+
+
 def compose_color(state, W, H, wob, stretch):
     """Premultiplied RGBA float array -> full frame over black."""
     from PIL import Image
@@ -490,18 +567,17 @@ def render_video_color(sheet_path, track, env, wav_path, out_path,
     # short completing transitions: T in-between frames easing into each new
     # pose (reads as a smear frame), then the pure pose — unlike a continuous
     # dissolve, it never lingers on a two-mouth blend
+    morpher = RegionMorpher(sprites)
     T = 3   # w hits 0.25, 0.75, then 1.0 -> two in-between frames per change
-    cur, t_in = track[0], T
-    state = sprites[cur].copy()
-    from_state = state
+    prev, cur, t_in = track[0], track[0], T
     for i, name in enumerate(track):
         wob = i / FPS * 2 * math.pi * 0.7
         if name != cur:
-            from_state, cur, t_in = state, name, 0
+            prev, cur, t_in = cur, name, 0
         if t_in < T:
             t_in += 1
             w = 0.5 - 0.5 * math.cos(math.pi * t_in / T)   # eased 0..1
-            state = (1 - w) * from_state + w * sprites[cur]
+            state = morpher.frame(prev, cur, w)            # true shape in-between
         else:
             state = sprites[cur]
         stretch = 0.05 * e_smooth[i] + 0.012 * math.sin(wob * 1.1)
