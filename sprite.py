@@ -205,106 +205,121 @@ def drift(frame, wob):
 
 
 class RegionMorpher:
-    """True in-betweens for flat cartoon art. Per pose PAIR, the area that
-    actually differs (the mouth) is decomposed into k flat-color layers whose
-    SHAPES are interpolated via signed distance fields and repainted, then
-    feathered into a plain blend of the rest — real intermediate mouths."""
+    """True in-betweens for flat cartoon art.
+
+    The mouth region, the colour palette and the per-pose shape decomposition
+    are all computed ONCE for the whole sheet, not per pose pair. That matters:
+    a per-pair palette or region silently shifts the painted colours and the
+    painted area every time the morph target changes — which in running speech
+    is ~12 times a second, and reads as flicker.
+
+    Each pose is stored as k flat-colour layers described by signed distance
+    fields; morphing interpolates those fields and repaints, so intermediate
+    frames are real mouth shapes rather than pixel blends.
+    """
 
     def __init__(self, sprites, k=5, seed=7):
-        self.sprites = {n: np.clip(s, 0, 1).astype(np.float32)
-                        for n, s in sprites.items()}
-        self.k, self.rng = k, np.random.RandomState(seed)
-        self.cache = {}
-
-    def _setup(self, a, b):
         from scipy import ndimage
 
-        A, B = self.sprites[a][..., :3], self.sprites[b][..., :3]
-        diff = ndimage.binary_opening(np.abs(A - B).max(-1) > 0.12, iterations=2)
-        if not diff.any():
-            return None
-        grown = ndimage.binary_dilation(diff, iterations=5)
-        lab, n = ndimage.label(grown)
-        sizes = ndimage.sum(grown, lab, range(1, n + 1))
-        keep = np.isin(lab, [i + 1 for i in range(n) if sizes[i] > sizes.max() * 0.3])
+        self.sprites = {n: np.clip(s, 0, 1).astype(np.float32)
+                        for n, s in sprites.items()}
+        self.names = list(self.sprites)
+        self.index = {n: i for i, n in enumerate(self.names)}
+        rng = np.random.RandomState(seed)
+
+        stack = np.stack([self.sprites[n][..., :3] for n in self.names])
+
+        # --- one region for every pair: where any pose differs from the mean
+        var = stack.std(axis=0).max(axis=-1)
+        m = ndimage.binary_opening(var > 0.15, iterations=2)
+        if not m.any():
+            self.box = None
+            return
+        lab, nlab = ndimage.label(ndimage.binary_dilation(m, iterations=5))
+        sizes = ndimage.sum(m, lab, range(1, nlab + 1))
+        keep = lab == int(np.argmax(sizes)) + 1
         soft = ndimage.gaussian_filter(keep.astype(np.float32), 3)
         ys, xs = np.where(keep)
-        pad = 6
-        y0, y1 = max(0, ys.min() - pad), min(A.shape[0], ys.max() + pad)
-        x0, x1 = max(0, xs.min() - pad), min(A.shape[1], xs.max() + pad)
-        ra, rb, sm = A[y0:y1, x0:x1], B[y0:y1, x0:x1], soft[y0:y1, x0:x1]
+        pad = 8
+        y0, y1 = max(0, ys.min() - pad), min(var.shape[0], ys.max() + pad)
+        x0, x1 = max(0, xs.min() - pad), min(var.shape[1], xs.max() + pad)
+        self.box = (y0, y1, x0, x1)
+        self.soft = soft[y0:y1, x0:x1][..., None]
+        region = stack[:, y0:y1, x0:x1]
 
-        px = np.concatenate([ra[sm > 0.5], rb[sm > 0.5]])
-        sample = px[self.rng.choice(len(px), min(15000, len(px)), replace=False)]
-        cent = sample[self.rng.choice(len(sample), self.k, replace=False)]
-        for _ in range(12):
-            d = ((sample[:, None] - cent[None]) ** 2).sum(-1)
-            lb = d.argmin(1)
-            for c in range(self.k):
+        # --- one palette shared by every pose, so colours never shift
+        px = region.reshape(-1, 3)
+        sample = px[rng.choice(len(px), min(30000, len(px)), replace=False)]
+        cent = sample[rng.choice(len(sample), k, replace=False)].copy()
+        for _ in range(15):
+            lb = ((sample[:, None] - cent[None]) ** 2).sum(-1).argmin(1)
+            for c in range(k):
                 if (lb == c).any():
                     cent[c] = sample[lb == c].mean(0)
+        self.colors = cent
+        self.k = k
+        self.dark = int(np.argmin(cent.sum(-1)))       # mouth interior cluster
 
-        def fields(img):
-            lb = ((img[..., None, :] - cent[None, None]) ** 2).sum(-1).argmin(-1)
+        # --- per pose: a distance field per colour layer, plus interior area
+        self.fields, self.area, counts = {}, {}, np.zeros(k)
+        for i, name in enumerate(self.names):
+            lb = ((region[i][..., None, :] - cent[None, None]) ** 2).sum(-1).argmin(-1)
             fs = []
-            for c in range(self.k):
-                m = lb == c
-                if m.any() and (~m).any():
-                    fs.append(np.clip(ndimage.distance_transform_edt(~m)
-                                      - ndimage.distance_transform_edt(m),
+            for c in range(k):
+                mask = lb == c
+                counts[c] += mask.sum()
+                if mask.any() and (~mask).any():
+                    fs.append(np.clip(ndimage.distance_transform_edt(~mask)
+                                      - ndimage.distance_transform_edt(mask),
                                       -20, 20).astype(np.float32))
                 else:
-                    fs.append(np.full(m.shape, 20.0 if not m.any() else -20.0,
+                    fs.append(np.full(mask.shape, 20.0 if not mask.any() else -20.0,
                                       np.float32))
-            return fs
+            self.fields[name] = fs
+            self.area[name] = float((lb == self.dark).sum())
+        self.order = np.argsort(-counts)               # paint big layers first
 
-        order = np.argsort([-(((ra[..., None, :] - cent[None, None]) ** 2)
-                              .sum(-1).argmin(-1) == c).sum() for c in range(self.k)])
-
-        # which way is the mouth going? the darkest cluster is its interior,
-        # so its area shrinking means we are closing
-        dark = int(np.argmin(cent.sum(-1)))
-        def area(img):
-            lb = ((img[..., None, :] - cent[None, None]) ** 2).sum(-1).argmin(-1)
-            return float((lb == dark).sum())
-        closing = 1.0 if area(ra) > area(rb) else -1.0
-
-        h, wd = ra.shape[:2]
-        yn = np.linspace(0, 1, h, dtype=np.float32)[:, None] * np.ones((1, wd), np.float32)
-        xn = np.ones((h, 1), np.float32) * np.linspace(0, 1, wd, dtype=np.float32)[None, :]
-        edge = np.abs(xn - 0.5) * 2.0                      # 0 centre, 1 corners
-        return ((y0, y1, x0, x1), sm[..., None], cent, fields(ra), fields(rb),
-                order, yn, edge, closing)
+        h, wd = region.shape[1:3]
+        self.yn = (np.linspace(0, 1, h, dtype=np.float32)[:, None]
+                   * np.ones((1, wd), np.float32))
+        self.edge = (np.ones((h, 1), np.float32)
+                     * np.abs(np.linspace(0, 1, wd, dtype=np.float32) - 0.5)[None, :] * 2.0)
 
     def frame(self, a, b, w, asym=True):
-        """Premultiplied RGBA canvas of pose a->b at weight w (real shapes)."""
+        """Premultiplied RGBA canvas of pose a->b at weight w.
+
+        The pair is ordered canonically, so frame(a, b, w) and frame(b, a, 1-w)
+        return the identical image — without that, every crossover between two
+        poses would pop.
+        """
+        if self.index[a] > self.index[b]:
+            a, b, w = b, a, 1.0 - w
         out = (1 - w) * self.sprites[a] + w * self.sprites[b]
-        if (a, b) not in self.cache:
-            self.cache[(a, b)] = self._setup(a, b)
-        pair = self.cache[(a, b)]
-        if pair is None:
+        if self.box is None or w <= 0.0:
             return out
-        (y0, y1, x0, x1), soft, colors, fa, fb, order, yn, edge, closing = pair
+        y0, y1, x0, x1 = self.box
 
         if asym:
             # A mouth does not close uniformly: the lower lip travels further
             # than the upper, and the corners meet before the centre does
-            # (opening runs the other way round). Bias the morph weight across
-            # the region to match. The bell vanishes at w=0 and w=1, so both
-            # endpoints still land exactly on their pose.
+            # (opening runs the other way). The bias is scaled by 4w(1-w), which
+            # vanishes at w=0 and w=1, so both ends land exactly on their pose.
+            closing = 1.0 if self.area[a] > self.area[b] else -1.0
             bell = 4.0 * w * (1.0 - w)
-            wf = w + bell * (0.34 * (yn - 0.5) + 0.30 * closing * (edge - 0.5))
-            wf = np.clip(wf, 0.0, 1.0).astype(np.float32)
+            wf = np.clip(w + bell * (0.30 * (self.yn - 0.5)
+                                     + 0.24 * closing * (self.edge - 0.5)),
+                         0.0, 1.0).astype(np.float32)
         else:
             wf = np.float32(w)
 
-        reg = out[y0:y1, x0:x1, :3].copy()
-        paint = np.zeros_like(reg)
-        for c in order:
+        fa, fb = self.fields[a], self.fields[b]
+        paint = np.zeros((y1 - y0, x1 - x0, 3), np.float32)
+        for c in self.order:
             f = (1 - wf) * fa[c] + wf * fb[c]
             alpha = np.clip(0.5 - f / 1.5, 0, 1)[..., None]
-            paint = paint * (1 - alpha) + colors[c] * alpha
-        out[y0:y1, x0:x1, :3] = reg * (1 - soft) + paint * soft
+            paint = paint * (1 - alpha) + self.colors[c] * alpha
+        reg = out[y0:y1, x0:x1, :3]
+        out[y0:y1, x0:x1, :3] = reg * (1 - self.soft) + paint * self.soft
         return out
 
 
@@ -347,55 +362,121 @@ def sprite_track(tokens, env, n_frames, fps=FPS):
     return track
 
 
-def coarticulate(track, fps=FPS, co_ms=50):
+# How much a viewer notices a viseme. Lip closure on m/b/p and the big open
+# vowels are the shapes an audience reads; a neutral consonant rest is filler.
+SALIENCE = {"MBP": 3, "AI": 3, "O": 3, "U": 3,
+            "E": 2, "L": 2, "FV": 2, "WQ": 2, "REST": 1}
+
+
+def _segments(track):
+    segs, s = [], 0
+    for i in range(1, len(track) + 1):
+        if i == len(track) or track[i] != track[s]:
+            segs.append([s, i, track[s]])
+            s = i
+    return segs
+
+
+def enforce_min_hold(track, fps=FPS, min_ms=110):
+    """Absorb visemes too brief to read, the way a lip-sync artist would.
+
+    Raw phoneme timings hand us a new mouth shape every two or three frames —
+    measured on ordinary TTS speech, two thirds of segments last under 130 ms.
+    Animating each one is both unreadable (the mouth never arrives anywhere)
+    and jittery. Papagayo and friends solve this with a minimum hold, and so do
+    we: a segment shorter than `min_ms` is either grown at the expense of a
+    neighbour, when it is the more salient shape (a lip closure on "m" is worth
+    protecting), or absorbed into the neighbour that reads more strongly.
+    """
+    min_f = max(2, int(round(min_ms / 1000 * fps)))
+    segs = _segments(track)
+    for _ in range(len(segs) * 4):                 # always terminates; bounded
+        short = [i for i, (s0, s1, _) in enumerate(segs) if s1 - s0 < min_f]
+        if not short or len(segs) < 2:
+            break
+        i = min(short, key=lambda j: segs[j][1] - segs[j][0])
+        s0, s1, name = segs[i]
+        left = segs[i - 1] if i > 0 else None
+        right = segs[i + 1] if i + 1 < len(segs) else None
+        cands = [c for c in (left, right) if c is not None]
+        best = max(cands, key=lambda c: (SALIENCE.get(c[2], 2), c[1] - c[0]))
+
+        # more salient than both neighbours? grow it instead of losing it
+        donor = max((c for c in cands if c[1] - c[0] > min_f),
+                    key=lambda c: c[1] - c[0], default=None)
+        if (SALIENCE.get(name, 2) > SALIENCE.get(best[2], 2)) and donor is not None:
+            need = min(min_f - (s1 - s0), (donor[1] - donor[0]) - min_f)
+            if need > 0:
+                if donor is left:
+                    donor[1] -= need
+                    segs[i][0] -= need
+                else:
+                    donor[0] += need
+                    segs[i][1] += need
+                continue
+
+        # otherwise fold it into whichever neighbour reads more strongly
+        if best is left:
+            left[1] = s1
+        else:
+            right[0] = s0
+        segs.pop(i)
+
+    out = list(track)
+    for s0, s1, name in segs:
+        for f in range(s0, s1):
+            out[f] = name
+    return out
+
+
+def coarticulate(track, fps=FPS, co_ms=28, min_hold_ms=150):
     """Per-frame (pose_a, pose_b, w) from a per-frame pose track.
 
-    Real mouths don't sit on one target then jump to the next: they start
-    moving toward a sound before it arrives, and in fast speech never fully
-    reach it before the next one pulls them away. Each phoneme segment holds
-    full influence for its own span and decays either side of it over a fixed
-    ~`co_ms` window, so neighbours overlap. That gives anticipation (weight
-    rises before a segment starts) and undershoot (a brief segment is diluted
-    by its neighbours and never reaches its pure pose) for free, while a long
-    segment still settles exactly on its pose. Each frame is then a blend of
-    the two strongest targets; at a crossover both orderings agree at w=0.5,
-    so the motion stays continuous.
+    The pose of the segment a frame belongs to always dominates, so the mouth
+    lands on the sound being made. Blending is confined to the boundaries: `w`
+    is 0.5 exactly at a segment edge and decays toward 0 across roughly `co_ms`
+    into the segment, which gives
 
-    The decay window is in milliseconds, not frames, so the feel of the
-    animation does not change with the output frame rate.
+      - anticipation and follow-through, since a frame near a boundary is
+        already part way toward the neighbouring pose;
+      - undershoot, because a segment shorter than the blend window never gets
+        far enough from its edges for w to reach 0 — exactly what a real mouth
+        does in fast speech;
+      - landing, because the middle of any segment longer than that window
+        reaches its pure pose and holds it.
+
+    The partner is always the adjacent segment in time, never whichever pose
+    happens to score highest globally: an unstable partner makes the morph
+    target flicker. The partner switches at the middle of a segment, where w is
+    at its smallest and the change is invisible.
+
+    `co_ms` is in milliseconds, so the animation feels the same at any frame
+    rate. Crossovers are continuous: the last frame of one segment and the
+    first of the next both sit at w=0.5 on the same pose pair, and
+    RegionMorpher orders pairs canonically so they render identically.
     """
     n = len(track)
     if n == 0:
         return []
-    segs, s = [], 0
-    for i in range(1, n + 1):
-        if i == n or track[i] != track[s]:
-            segs.append((s, i, track[s]))
-            s = i
+    track = enforce_min_hold(track, fps, min_hold_ms)
+    segs = [tuple(s) for s in _segments(track)]
 
-    frames = np.arange(n, dtype=np.float32)
-    sigma = max(0.8, co_ms / 1000 * fps)
-    acc = {}
-    for s0, s1, name in segs:
-        # 0 inside the segment, else frames to its nearer edge
-        dist = np.maximum(0.0, np.maximum(s0 - frames, frames - (s1 - 1)))
-        g = np.exp(-0.5 * (dist / sigma) ** 2)
-        acc[name] = np.maximum(acc[name], g) if name in acc else g
-
-    names = list(acc)
-    if len(names) == 1:
-        return [(names[0], names[0], 0.0)] * n
-    M = np.stack([acc[k] for k in names])            # (poses, frames)
-    top = np.argpartition(-M, 1, axis=0)[:2]         # indices of best two
-    i1, i2 = top[0], top[1]
-    w1 = M[i1, np.arange(n)]
-    w2 = M[i2, np.arange(n)]
-    swap = w2 > w1
-    i1, i2 = np.where(swap, i2, i1), np.where(swap, i1, i2)
-    w1, w2 = np.where(swap, w2, w1), np.where(swap, w1, w2)
-    tot = np.maximum(w1 + w2, 1e-9)
-    w = w2 / tot
-    return [(names[i1[f]], names[i2[f]], float(w[f])) for f in range(n)]
+    sigma = max(0.6, co_ms / 1000 * fps)
+    out = []
+    for k, (s0, s1, name) in enumerate(segs):
+        prev = segs[k - 1][2] if k > 0 else None
+        nxt = segs[k + 1][2] if k + 1 < len(segs) else None
+        for f in range(s0, s1):
+            d_prev, d_next = f - s0, (s1 - 1) - f
+            if d_prev <= d_next:
+                partner, d = prev, d_prev
+            else:
+                partner, d = nxt, d_next
+            if partner is None:
+                out.append((name, name, 0.0))
+            else:
+                out.append((name, partner, 0.5 * math.exp(-0.5 * (d / sigma) ** 2)))
+    return out
 
 
 def sdf(mask):
@@ -605,7 +686,9 @@ def render_video(sheet_path, track, env, wav_path, out_path, style="pumpkin",
     # signed-distance fields per sprite; blending SDFs = smooth shape morphs
     fields = {name: sdf(m) for name, m in sprites.items()}
     blend = coarticulate(track, fps)
-    e_smooth = np.convolve(env, np.ones(5) / 5, mode="same")
+    # wide smoothing: the squash follows the shape of a phrase, not every
+    # syllable — a fast-reacting scale on a 1080p face reads as pulsing
+    e_smooth = np.convolve(env, np.ones(11) / 11, mode="same")
 
     # random blinks: eased shut-and-open profile, every ~2-5 s
     boxes = eye_boxes(sprites["REST"])
@@ -621,7 +704,7 @@ def render_video(sheet_path, track, env, wav_path, out_path, style="pumpkin",
         wob = i / fps * 2 * math.pi * 0.7
         state = fields[a] if w < 0.01 else (1 - w) * fields[a] + w * fields[b]
         shown = apply_blink(state, boxes, blink_f[i]) if blink_f[i] < 1 else state
-        stretch = 0.05 * e_smooth[i] + 0.012 * math.sin(wob * 1.1)
+        stretch = 0.035 * e_smooth[i] + 0.010 * math.sin(wob * 1.1)
         frame = drift(colorize(shown, style, W, H, wob, stretch), wob)
         proc.stdin.write(frame.tobytes())
         if progress:
@@ -641,7 +724,9 @@ def render_video_color(sheet_path, track, env, wav_path, out_path,
          "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest",
          os.path.abspath(out_path)],
         stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    e_smooth = np.convolve(env, np.ones(5) / 5, mode="same")
+    # wide smoothing: the squash follows the shape of a phrase, not every
+    # syllable — a fast-reacting scale on a 1080p face reads as pulsing
+    e_smooth = np.convolve(env, np.ones(11) / 11, mode="same")
     # continuous co-articulated motion: every frame is a shape morph between
     # the two strongest pose targets, so the mouth is always travelling and
     # never sits on a blend of two mouths
@@ -650,7 +735,7 @@ def render_video_color(sheet_path, track, env, wav_path, out_path,
     for i, (a, b, w) in enumerate(blend):
         wob = i / fps * 2 * math.pi * 0.7
         state = sprites[a] if w < 0.01 else morpher.frame(a, b, w)
-        stretch = 0.05 * e_smooth[i] + 0.012 * math.sin(wob * 1.1)
+        stretch = 0.035 * e_smooth[i] + 0.010 * math.sin(wob * 1.1)
         frame = drift(compose_color(state, W, H, wob, stretch), wob)
         proc.stdin.write(frame.tobytes())
         if progress:
