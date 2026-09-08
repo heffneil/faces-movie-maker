@@ -30,11 +30,12 @@ time. It slices a 3x3 sheet into 9 mouth poses and builds frames from them.
 - **Integer-pixel idle motion.** Held poses became pixel-identical for several
   frames, which reads as low frame rate even though the file is 30 fps.
 
-- **Asking for more artwork.** The sheet stays at the 9 Papagayo visemes
-  (AI/E/FV/L/MBP/O/U/WQ/rest) — that is the set xLights generates, so any sheet
-  that works here works there and vice versa. Denser sheets, extra half-open
-  poses, and separate closed-eye artwork are all off the table: quality has to
-  come from what we synthesise between the nine poses the user already has.
+- **Asking for more artwork.** The input stays at the 9 Papagayo visemes
+  (AI/E/FV/L/MBP/O/U/WQ/rest). Denser sheets, extra half-open poses and separate
+  closed-eye artwork are off the table — not for xLights compatibility (the
+  deliverable is a video; we are not driving the xLights Faces module), simply
+  because the user should hand over nine images and nothing more. Everything
+  else is ours to synthesise.
 
 ## Open opportunities
 
@@ -53,18 +54,36 @@ hardware — see Resources below. All of it works within the fixed 9-pose sheet.
       pose space — weight previous/current/next phoneme, undershoot brief
       targets. Pure maths, no new dependencies, no render cost.
 
-- [ ] **3. Synthesise the missing poses instead of asking for them.** We can't
-      add artwork, but we *can* derive intermediates once at load time and treat
-      them as first-class poses — e.g. a half-open mouth as the SDF midpoint of
-      AI and MBP, cached per sheet. Same benefit as a denser sheet (shorter
-      synthesis distance per transition) with no burden on the user. Cheap to
-      try, since `RegionMorpher.frame(a, b, 0.5)` already produces exactly this.
+- [ ] **3. Better morph maths — not more materialised poses.** Producing the
+      in-betweens ourselves is already the architecture (`RegionMorpher`), and
+      it is the only route open to us. But note what it can and cannot buy:
+
+      *Baking computed midpoints into the library as extra poses is a caching
+      optimisation, not a quality one.* A geometric midpoint of AI and MBP holds
+      no information the two endpoints didn't already have — animating
+      AI → midpoint → MBP renders the identical pixels as morphing AI → MBP
+      across the same frames. A hand-drawn half-open mouth would have added
+      information (the artist knows what one looks like); an interpolated one
+      does not.
+
+      So quality has to come from a better *path* between poses, not more stops
+      along it: correct the morph so shapes travel plausibly (a mouth closes
+      from the edges inward, the lower lip moves further than the upper), rather
+      than every colour layer shrinking uniformly toward its target.
 
 - [ ] **4. Neural frame interpolation on the GPU.** Only if 1–3 leave something
       wanted. **FILM** is the right model (built for *large* motion between
       frames, which is exactly a pose change); RIFE is faster but assumes small
       motion. Runs on MPS. Adds a dependency and render time — skipping it keeps
       renders fast, so treat it as a last resort rather than the goal.
+
+      This is the one option that genuinely *adds* information rather than
+      redistributing what the nine poses already contain, because the model has
+      learned what moving mouths look like. A generative variant (an image model
+      inventing true intermediate artwork once per sheet, cached) would add even
+      more — but style consistency across generated cells is the hard part, and
+      an off-model frame is far more jarring than a slightly stiff morph. Park
+      both until the cheap wins are exhausted.
 
 ### Blinks (separate from mouth quality)
 
