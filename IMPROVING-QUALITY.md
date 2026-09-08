@@ -30,10 +30,16 @@ time. It slices a 3x3 sheet into 9 mouth poses and builds frames from them.
 - **Integer-pixel idle motion.** Held poses became pixel-identical for several
   frames, which reads as low frame rate even though the file is 30 fps.
 
+- **Asking for more artwork.** The sheet stays at the 9 Papagayo visemes
+  (AI/E/FV/L/MBP/O/U/WQ/rest) — that is the set xLights generates, so any sheet
+  that works here works there and vice versa. Denser sheets, extra half-open
+  poses, and separate closed-eye artwork are all off the table: quality has to
+  come from what we synthesise between the nine poses the user already has.
+
 ## Open opportunities
 
 Ordered by perceptual gain per unit of effort. Nothing here is blocked by
-hardware — see Resources below.
+hardware — see Resources below. All of it works within the fixed 9-pose sheet.
 
 - [ ] **1. Bigger frame budget.** Raise `FPS` to 60 and lengthen `T` so each
       mouth change gets 5–7 in-betweens instead of 2. Roughly 2x render time,
@@ -47,10 +53,12 @@ hardware — see Resources below.
       pose space — weight previous/current/next phoneme, undershoot brief
       targets. Pure maths, no new dependencies, no render cost.
 
-- [ ] **3. Denser sprite sheets.** Nine poses is a small vocabulary, so every
-      transition has to invent a lot. Half-open variants (between AI and MBP,
-      mid-O) shorten the synthesis distance and improve results from *any*
-      interpolation method. Costs image-generation time, not engineering.
+- [ ] **3. Synthesise the missing poses instead of asking for them.** We can't
+      add artwork, but we *can* derive intermediates once at load time and treat
+      them as first-class poses — e.g. a half-open mouth as the SDF midpoint of
+      AI and MBP, cached per sheet. Same benefit as a denser sheet (shorter
+      synthesis distance per transition) with no burden on the user. Cheap to
+      try, since `RegionMorpher.frame(a, b, 0.5)` already produces exactly this.
 
 - [ ] **4. Neural frame interpolation on the GPU.** Only if 1–3 leave something
       wanted. **FILM** is the right model (built for *large* motion between
@@ -65,10 +73,12 @@ hardware — see Resources below.
       authored in xLights alongside the light show and land on the beat.
 - [ ] **Blink rate control** in the studio UI (average seconds between blinks, or
       off). Human cadence is ~3–5 s; spooky characters read better at 6–8 s.
-- [ ] **Blinks for the color style.** Best: accept a closed-eyes pose (10th cell
-      or a second upload) so blinks cut to real artwork. Fallback with no extra
-      art: detect the pupil blobs and vertically squash that region, the same
-      trick the glow styles use.
+- [ ] **Blinks for the color style** (currently glow-only). Since we don't ask
+      for closed-eye artwork, do it synthetically: find the pupil blobs in the
+      upper face and vertically squash that region of the RGB art, the same
+      row-remap the glow styles already use on the distance field. The eyes are
+      identical across all nine cells, so the region only has to be found once
+      per sheet.
 
 ## Resources available
 
