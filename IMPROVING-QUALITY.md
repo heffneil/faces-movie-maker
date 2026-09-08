@@ -27,6 +27,19 @@ time. It slices a 3x3 sheet into 9 mouth poses and builds frames from them.
   pair; produced the same ghosting as a dissolve. Optical-flow estimators fail on
   flat cartoon art with no texture to track.
 - **Hard cuts with no in-betweens.** Clean, but the mouth teleports.
+- **Animating every phoneme.** Raw phoneme timings give a new viseme every two
+  or three frames — measured on ordinary TTS speech, 35% of segments lasted
+  67 ms and 67% were under 130 ms. The mouth never arrives anywhere and the
+  result is jittery. A minimum hold (`enforce_min_hold`, ~150 ms) is not a
+  compromise, it is what lip-sync artists do: animate at roughly syllable rate,
+  absorbing brief phonemes into their neighbours.
+
+- **Anything computed per pose pair.** The palette and region box used to be
+  derived per pair, so both shifted at every morph-target change — about twelve
+  times a second in speech, which reads as flicker. Region, palette and shape
+  decomposition are all per SHEET now. Anything new that varies per pair needs
+  the same scrutiny.
+
 - **Integer-pixel idle motion.** Held poses became pixel-identical for several
   frames, which reads as low frame rate even though the file is 30 fps.
 
@@ -105,6 +118,21 @@ hardware — see Resources below. All of it works within the fixed 9-pose sheet.
       more — but style consistency across generated cells is the hard part, and
       an off-model frame is far more jarring than a slightly stiff morph. Park
       both until the cheap wins are exhausted.
+
+### Numbers worth re-measuring after any change
+
+Measured on one TTS line ("Merry Christmas everybody!..."), 30 fps:
+
+| | before min-hold | after |
+|---|---|---|
+| morph-target changes | 12.2 / sec | ~4 / sec |
+| frames landed on a pose (w<0.05) | 24% | ~51% |
+| frames stuck mid-morph (w>0.35) | 47% | ~24% |
+
+The knobs are `min_hold_ms` (150) and `co_ms` (28) in `coarticulate`. Raising
+the hold calms the motion further but eventually costs sync fidelity, since
+absorbed visemes move boundaries by up to one hold; `/tmp` sweep script in the
+commit history shows the trade-off curve.
 
 ### Blinks (separate from mouth quality)
 
