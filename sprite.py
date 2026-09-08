@@ -260,9 +260,23 @@ class RegionMorpher:
 
         order = np.argsort([-(((ra[..., None, :] - cent[None, None]) ** 2)
                               .sum(-1).argmin(-1) == c).sum() for c in range(self.k)])
-        return ((y0, y1, x0, x1), sm[..., None], cent, fields(ra), fields(rb), order)
 
-    def frame(self, a, b, w):
+        # which way is the mouth going? the darkest cluster is its interior,
+        # so its area shrinking means we are closing
+        dark = int(np.argmin(cent.sum(-1)))
+        def area(img):
+            lb = ((img[..., None, :] - cent[None, None]) ** 2).sum(-1).argmin(-1)
+            return float((lb == dark).sum())
+        closing = 1.0 if area(ra) > area(rb) else -1.0
+
+        h, wd = ra.shape[:2]
+        yn = np.linspace(0, 1, h, dtype=np.float32)[:, None] * np.ones((1, wd), np.float32)
+        xn = np.ones((h, 1), np.float32) * np.linspace(0, 1, wd, dtype=np.float32)[None, :]
+        edge = np.abs(xn - 0.5) * 2.0                      # 0 centre, 1 corners
+        return ((y0, y1, x0, x1), sm[..., None], cent, fields(ra), fields(rb),
+                order, yn, edge, closing)
+
+    def frame(self, a, b, w, asym=True):
         """Premultiplied RGBA canvas of pose a->b at weight w (real shapes)."""
         out = (1 - w) * self.sprites[a] + w * self.sprites[b]
         if (a, b) not in self.cache:
@@ -270,11 +284,24 @@ class RegionMorpher:
         pair = self.cache[(a, b)]
         if pair is None:
             return out
-        (y0, y1, x0, x1), soft, colors, fa, fb, order = pair
+        (y0, y1, x0, x1), soft, colors, fa, fb, order, yn, edge, closing = pair
+
+        if asym:
+            # A mouth does not close uniformly: the lower lip travels further
+            # than the upper, and the corners meet before the centre does
+            # (opening runs the other way round). Bias the morph weight across
+            # the region to match. The bell vanishes at w=0 and w=1, so both
+            # endpoints still land exactly on their pose.
+            bell = 4.0 * w * (1.0 - w)
+            wf = w + bell * (0.34 * (yn - 0.5) + 0.30 * closing * (edge - 0.5))
+            wf = np.clip(wf, 0.0, 1.0).astype(np.float32)
+        else:
+            wf = np.float32(w)
+
         reg = out[y0:y1, x0:x1, :3].copy()
         paint = np.zeros_like(reg)
         for c in order:
-            f = (1 - w) * fa[c] + w * fb[c]
+            f = (1 - wf) * fa[c] + wf * fb[c]
             alpha = np.clip(0.5 - f / 1.5, 0, 1)[..., None]
             paint = paint * (1 - alpha) + colors[c] * alpha
         out[y0:y1, x0:x1, :3] = reg * (1 - soft) + paint * soft
@@ -298,7 +325,7 @@ def compose_color(state, W, H, wob, stretch):
     return frame
 
 
-def sprite_track(tokens, env, n_frames):
+def sprite_track(tokens, env, n_frames, fps=FPS):
     """Per-frame sprite name, phoneme-timed, min 2-frame hold."""
     track = ["REST"] * n_frames
     for start, end, phonemes in tokens:
@@ -307,8 +334,8 @@ def sprite_track(tokens, env, n_frames):
             continue
         dur = (end - start) / len(ph)
         for k, c in enumerate(ph):
-            f0 = int((start + k * dur) * FPS)
-            f1 = max(f0 + 1, int((start + (k + 1) * dur) * FPS))
+            f0 = int((start + k * dur) * fps)
+            f1 = max(f0 + 1, int((start + (k + 1) * dur) * fps))
             for f in range(f0, min(f1, n_frames)):
                 track[f] = PH2SPRITE.get(c, "REST")
     for i, e in enumerate(env):                  # silence -> rest face
@@ -318,6 +345,57 @@ def sprite_track(tokens, env, n_frames):
         if track[i] != track[i - 1] and track[i] != track[i + 1]:
             track[i] = track[i - 1]
     return track
+
+
+def coarticulate(track, fps=FPS, co_ms=50):
+    """Per-frame (pose_a, pose_b, w) from a per-frame pose track.
+
+    Real mouths don't sit on one target then jump to the next: they start
+    moving toward a sound before it arrives, and in fast speech never fully
+    reach it before the next one pulls them away. Each phoneme segment holds
+    full influence for its own span and decays either side of it over a fixed
+    ~`co_ms` window, so neighbours overlap. That gives anticipation (weight
+    rises before a segment starts) and undershoot (a brief segment is diluted
+    by its neighbours and never reaches its pure pose) for free, while a long
+    segment still settles exactly on its pose. Each frame is then a blend of
+    the two strongest targets; at a crossover both orderings agree at w=0.5,
+    so the motion stays continuous.
+
+    The decay window is in milliseconds, not frames, so the feel of the
+    animation does not change with the output frame rate.
+    """
+    n = len(track)
+    if n == 0:
+        return []
+    segs, s = [], 0
+    for i in range(1, n + 1):
+        if i == n or track[i] != track[s]:
+            segs.append((s, i, track[s]))
+            s = i
+
+    frames = np.arange(n, dtype=np.float32)
+    sigma = max(0.8, co_ms / 1000 * fps)
+    acc = {}
+    for s0, s1, name in segs:
+        # 0 inside the segment, else frames to its nearer edge
+        dist = np.maximum(0.0, np.maximum(s0 - frames, frames - (s1 - 1)))
+        g = np.exp(-0.5 * (dist / sigma) ** 2)
+        acc[name] = np.maximum(acc[name], g) if name in acc else g
+
+    names = list(acc)
+    if len(names) == 1:
+        return [(names[0], names[0], 0.0)] * n
+    M = np.stack([acc[k] for k in names])            # (poses, frames)
+    top = np.argpartition(-M, 1, axis=0)[:2]         # indices of best two
+    i1, i2 = top[0], top[1]
+    w1 = M[i1, np.arange(n)]
+    w2 = M[i2, np.arange(n)]
+    swap = w2 > w1
+    i1, i2 = np.where(swap, i2, i1), np.where(swap, i1, i2)
+    w1, w2 = np.where(swap, w2, w1), np.where(swap, w1, w2)
+    tot = np.maximum(w1 + w2, 1e-9)
+    w = w2 / tot
+    return [(names[i1[f]], names[i2[f]], float(w[f])) for f in range(n)]
 
 
 def sdf(mask):
@@ -379,7 +457,7 @@ def _spread_words(text, start, end, g2p):
 XT_VIS = {n: n for n in SPRITE_NAMES} | {"ETC": "REST", "REST": "REST"}
 
 
-def xtiming_track(xml_text, env, n_frames):
+def xtiming_track(xml_text, env, n_frames, fps=FPS):
     """Parse an xLights .xtiming file into a per-frame sprite track.
     Prefers a phoneme layer (AI/E/FV/L/MBP/O/U/WQ/etc labels, frame-accurate);
     falls back to phonemizing a words/phrases layer within its timings."""
@@ -410,8 +488,8 @@ def xtiming_track(xml_text, env, n_frames):
             name = XT_VIS.get(label.upper())
             if not name:
                 continue
-            f0 = int(s / 1000 * FPS)
-            f1 = max(f0 + 1, int(e / 1000 * FPS))
+            f0 = int(s / 1000 * fps)
+            f1 = max(f0 + 1, int(e / 1000 * fps))
             for f in range(f0, min(f1, n_frames)):
                 track[f] = name
         return track
@@ -425,7 +503,7 @@ def xtiming_track(xml_text, env, n_frames):
         tokens.extend(_spread_words(label, s / 1000, e / 1000, g2p))
     if not tokens:
         raise RuntimeError("could not phonemize any labels in the xtiming file")
-    return sprite_track(tokens, env, n_frames)
+    return sprite_track(tokens, env, n_frames, fps)
 
 
 def aligned_word_tokens(words):
@@ -510,23 +588,23 @@ def lyric_tokens(lrc_text, total_dur):
 
 
 def render_video(sheet_path, track, env, wav_path, out_path, style="pumpkin",
-                 W=1280, H=720, progress=None):
+                 W=1280, H=720, progress=None, fps=FPS):
     """Render a sprite-track to MP4. `progress(done, total)` is optional.
-    style 'color' keeps the sheet's own artwork (cross-dissolve morphs);
-    other styles threshold to ink and render as a glowing carve."""
+    style 'color' keeps the sheet's own artwork; other styles threshold to ink
+    and render as a glowing carve. Both morph shapes, never pixel-blend."""
     if style == "color":
         return render_video_color(sheet_path, track, env, wav_path, out_path,
-                                  W, H, progress)
+                                  W, H, progress, fps)
     sprites = slice_sheet(sheet_path)
     proc = subprocess.Popen(
         ["ffmpeg", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}",
-         "-r", str(FPS), "-i", "-", "-i", wav_path,
+         "-r", str(fps), "-i", "-", "-i", wav_path,
          "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest",
          os.path.abspath(out_path)],
         stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     # signed-distance fields per sprite; blending SDFs = smooth shape morphs
     fields = {name: sdf(m) for name, m in sprites.items()}
-    state = fields["REST"].copy()
+    blend = coarticulate(track, fps)
     e_smooth = np.convolve(env, np.ones(5) / 5, mode="same")
 
     # random blinks: eased shut-and-open profile, every ~2-5 s
@@ -534,14 +612,14 @@ def render_video(sheet_path, track, env, wav_path, out_path, style="pumpkin",
     profile = [0.55, 0.12, 0.06, 0.12, 0.55, 0.85]   # eye openness during a blink
     blink_f = np.ones(len(track))
     rng = np.random.RandomState()
-    t = rng.randint(FPS, 3 * FPS)
+    t = rng.randint(fps, 3 * fps)
     while t < len(track) - len(profile):
         blink_f[t:t + len(profile)] = profile
-        t += rng.randint(2 * FPS, 5 * FPS)
+        t += rng.randint(2 * fps, 5 * fps)
 
-    for i, name in enumerate(track):
-        wob = i / FPS * 2 * math.pi * 0.7
-        state = 0.62 * state + 0.38 * fields[name]   # eased morph toward target
+    for i, (a, b, w) in enumerate(blend):
+        wob = i / fps * 2 * math.pi * 0.7
+        state = fields[a] if w < 0.01 else (1 - w) * fields[a] + w * fields[b]
         shown = apply_blink(state, boxes, blink_f[i]) if blink_f[i] < 1 else state
         stretch = 0.05 * e_smooth[i] + 0.012 * math.sin(wob * 1.1)
         frame = drift(colorize(shown, style, W, H, wob, stretch), wob)
@@ -555,31 +633,23 @@ def render_video(sheet_path, track, env, wav_path, out_path, style="pumpkin",
 
 
 def render_video_color(sheet_path, track, env, wav_path, out_path,
-                       W=1280, H=720, progress=None):
+                       W=1280, H=720, progress=None, fps=FPS):
     sprites = slice_sheet_color(sheet_path)
     proc = subprocess.Popen(
         ["ffmpeg", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}",
-         "-r", str(FPS), "-i", "-", "-i", wav_path,
+         "-r", str(fps), "-i", "-", "-i", wav_path,
          "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest",
          os.path.abspath(out_path)],
         stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     e_smooth = np.convolve(env, np.ones(5) / 5, mode="same")
-    # short completing transitions: T in-between frames easing into each new
-    # pose (reads as a smear frame), then the pure pose — unlike a continuous
-    # dissolve, it never lingers on a two-mouth blend
+    # continuous co-articulated motion: every frame is a shape morph between
+    # the two strongest pose targets, so the mouth is always travelling and
+    # never sits on a blend of two mouths
     morpher = RegionMorpher(sprites)
-    T = 3   # w hits 0.25, 0.75, then 1.0 -> two in-between frames per change
-    prev, cur, t_in = track[0], track[0], T
-    for i, name in enumerate(track):
-        wob = i / FPS * 2 * math.pi * 0.7
-        if name != cur:
-            prev, cur, t_in = cur, name, 0
-        if t_in < T:
-            t_in += 1
-            w = 0.5 - 0.5 * math.cos(math.pi * t_in / T)   # eased 0..1
-            state = morpher.frame(prev, cur, w)            # true shape in-between
-        else:
-            state = sprites[cur]
+    blend = coarticulate(track, fps)
+    for i, (a, b, w) in enumerate(blend):
+        wob = i / fps * 2 * math.pi * 0.7
+        state = sprites[a] if w < 0.01 else morpher.frame(a, b, w)
         stretch = 0.05 * e_smooth[i] + 0.012 * math.sin(wob * 1.1)
         frame = drift(compose_color(state, W, H, wob, stretch), wob)
         proc.stdin.write(frame.tobytes())
@@ -599,6 +669,7 @@ def main():
     p.add_argument("--style", default="pumpkin", choices=list(STYLES) + ["color"])
     p.add_argument("--voice", default="am_michael")
     p.add_argument("--size", default="1920x1080")
+    p.add_argument("--fps", type=int, default=FPS, help="30 (default) or 60")
     args = p.parse_args()
     W, H = (int(v) for v in args.size.split("x"))
 
@@ -606,11 +677,12 @@ def main():
     print("[1/3] TTS ...")
     _, tokens = tts(args.text, args.voice, wav)
     audio, sr = load_audio(wav)
-    n_frames = max(1, int(len(audio) / sr * FPS))
+    n_frames = max(1, int(len(audio) / sr * args.fps))
     env = envelope(audio, sr, n_frames)
-    track = sprite_track(tokens, env, n_frames)
+    track = sprite_track(tokens, env, n_frames, args.fps)
     print("[2/3] rendering", n_frames, "frames ...")
-    render_video(args.sheet, track, env, wav, args.out, args.style, W, H)
+    render_video(args.sheet, track, env, wav, args.out, args.style, W, H,
+                 fps=args.fps)
     os.unlink(wav)
     print(f"[3/3] done: {args.out}")
 

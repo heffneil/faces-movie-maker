@@ -42,17 +42,28 @@ time. It slices a 3x3 sheet into 9 mouth poses and builds frames from them.
 Ordered by perceptual gain per unit of effort. Nothing here is blocked by
 hardware — see Resources below. All of it works within the fixed 9-pose sheet.
 
-- [ ] **1. Bigger frame budget.** Raise `FPS` to 60 and lengthen `T` so each
-      mouth change gets 5–7 in-betweens instead of 2. Roughly 2x render time,
-      no new dependencies. Try this before anything cleverer: more samples of a
-      decent morph usually beats fewer samples of a great one.
+- [x] **1. Bigger frame budget.** *Done 2026-09-02.* Frame rate is a parameter
+      (`--fps`, and an FPS control in both studio panels) rather than a module
+      constant; 30 stays the default, 60 costs about 2x render time. Note the
+      co-articulation window below is specified in milliseconds, so the
+      animation feels identical at either rate — 60 just samples it more finely.
 
-- [ ] **2. Co-articulation.** *Biggest expected win.* Today the mouth holds a
-      discrete pose then transitions to the next discrete pose. Real speech
-      anticipates upcoming sounds and, when fast, never fully reaches a target
-      before moving toward the next. Model the mouth as a smooth path through
-      pose space — weight previous/current/next phoneme, undershoot brief
-      targets. Pure maths, no new dependencies, no render cost.
+- [x] **2. Co-articulation.** *Done 2026-09-02 — `coarticulate()`.* Replaced the
+      hold-then-transition model in both render paths. Each phoneme segment
+      holds full influence over its own span and decays either side over a fixed
+      ~50 ms window, so neighbours overlap; every frame is then a morph between
+      the two strongest targets. Falls out of that for free:
+
+      - *anticipation* — the mouth is already ~30% toward a sound two frames
+        before it starts
+      - *undershoot* — a 2–3 frame phoneme only travels ~56–70% toward its pose
+        because its neighbours dilute it, exactly as a real mouth does in fast
+        speech; a long phoneme still settles exactly on its pose
+      - *continuity* — at a crossover both orderings agree at w=0.5, so there is
+        no discontinuity, and no frame is ever a static held pose
+
+      Verify with the synthetic track in the commit message, or by checking that
+      consecutive frames always differ (see "How to judge a change").
 
 - [ ] **3. Better morph maths — not more materialised poses.** Producing the
       in-betweens ourselves is already the architecture (`RegionMorpher`), and
@@ -67,9 +78,19 @@ hardware — see Resources below. All of it works within the fixed 9-pose sheet.
       does not.
 
       So quality has to come from a better *path* between poses, not more stops
-      along it: correct the morph so shapes travel plausibly (a mouth closes
-      from the edges inward, the lower lip moves further than the upper), rather
-      than every colour layer shrinking uniformly toward its target.
+      along it.
+
+      *Partly done 2026-09-02* — `RegionMorpher.frame(..., asym=True)` no longer
+      advances every pixel of the region at the same rate. The morph weight is
+      now a field biased so the lower lip travels further than the upper, and so
+      the corners lead when the mouth is closing (the centre leads when it is
+      opening — direction is detected by whether the dark interior cluster is
+      shrinking). The bias is scaled by `4w(1-w)`, which vanishes at w=0 and
+      w=1, so both endpoints still land exactly on their pose.
+
+      Still open: the layers move independently, so a tongue or teeth can drift
+      slightly out of step with the lip that should carry them. Grouping layers
+      that belong to the same anatomical part would fix it.
 
 - [ ] **4. Neural frame interpolation on the GPU.** Only if 1–3 leave something
       wanted. **FILM** is the right model (built for *large* motion between

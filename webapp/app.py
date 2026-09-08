@@ -153,6 +153,7 @@ def render_tts():
     style = d.get("style", "pumpkin")
     W, H = (int(v) for v in d.get("size", "1280x720").split("x"))
     text, voice = d["text"], d.get("voice", "am_michael")
+    fps = int(d.get("fps", FPS))
     jid = uuid.uuid4().hex[:10]
     out = os.path.join(RENDERS, f"{jid}.mp4")
     JOBS[jid] = {"status": "running", "progress": 0, "label": text[:60],
@@ -162,10 +163,11 @@ def render_tts():
         wav = tempfile.mktemp(suffix=".wav")
         _, tokens = tts(text, voice, wav)
         audio, sr = load_audio(wav)
-        n = max(1, int(len(audio) / sr * FPS))
+        n = max(1, int(len(audio) / sr * fps))
         env = envelope(audio, sr, n)
-        track = sprite_track(tokens, env, n)
-        render_video(spath, track, env, wav, out, style, W, H, make_progress(jid))
+        track = sprite_track(tokens, env, n, fps)
+        render_video(spath, track, env, wav, out, style, W, H,
+                     make_progress(jid), fps)
         os.unlink(wav)
 
     run_job(jid, work)
@@ -201,14 +203,15 @@ def render_song():
                  "url": f"/renders/{jid}.mp4", "created": time.time()}
 
     auto_align = request.form.get("align") == "1"
+    fps = int(request.form.get("fps", FPS))
 
     def work():
         audio, sr = load_audio(wav)
         dur = len(audio) / sr
-        n = max(1, int(dur * FPS))
+        n = max(1, int(dur * fps))
         env = envelope(audio, sr, n)
         if xt_xml:
-            track = xtiming_track(xt_xml, env, n)
+            track = xtiming_track(xt_xml, env, n, fps)
         elif auto_align:
             JOBS[jid]["stage"] = "aligning lyrics on node7 (~2 min per song)…"
             words = align_lyrics(raw, lrc)
@@ -216,15 +219,16 @@ def render_song():
             with open(os.path.join(RENDERS, f"{jid}.xtiming"), "w") as fh:
                 fh.write(words_to_xtiming(words, label))
             JOBS[jid]["xtiming"] = f"/renders/{jid}.xtiming"
-            track = sprite_track(aligned_word_tokens(words), env, n)
+            track = sprite_track(aligned_word_tokens(words), env, n, fps)
             JOBS[jid]["stage"] = None
         else:
             tokens = lyric_tokens(lrc, dur)
             if not tokens:
                 raise RuntimeError("no timed lyric lines found — use [mm:ss.xx] "
                                    "Lyric text, or check Auto-align")
-            track = sprite_track(tokens, env, n)
-        render_video(spath, track, env, wav, out, style, W, H, make_progress(jid))
+            track = sprite_track(tokens, env, n, fps)
+        render_video(spath, track, env, wav, out, style, W, H,
+                     make_progress(jid), fps)
 
     run_job(jid, work)
     return jsonify({"job": jid})
