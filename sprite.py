@@ -106,57 +106,84 @@ def apply_blink(field, boxes, f):
     return out
 
 
+def _cell_boxes(ink, n=3):
+    """Split a sheet into n x n cell boxes.
+
+    Cells are found by locating the near-empty gutters between them rather
+    than by connected components: a thin gutter survives as white space but
+    is easily bridged by any morphological closing, which used to weld a
+    whole row into one blob ("found only 3 face blobs"). Falls back to an
+    even split when a sheet has no clear gutters.
+    """
+    h, w = ink.shape
+
+    def cuts(profile, count):
+        empty = profile < 0.004
+        runs, i = [], 0
+        while i < len(empty):
+            if empty[i]:
+                j = i
+                while j < len(empty) and empty[j]:
+                    j += 1
+                runs.append((i, j))
+                i = j
+            else:
+                i += 1
+        lo, hi = len(empty) * 0.08, len(empty) * 0.92
+        inner = sorted((r for r in runs if r[0] > lo and r[1] < hi),
+                       key=lambda r: r[0] - r[1])        # widest first
+        found = sorted((r[0] + r[1]) // 2 for r in inner[:count - 1])
+        if len(found) != count - 1:                       # no clear gutters
+            return [round(len(empty) * k / count) for k in range(1, count)]
+        return found
+
+    ys = [0] + cuts(ink.mean(axis=1), n) + [h]
+    xs = [0] + cuts(ink.mean(axis=0), n) + [w]
+    return [(ys[r], ys[r + 1], xs[c], xs[c + 1])
+            for r in range(n) for c in range(n)]
+
+
 def slice_sheet_color(path, label_trim=0.16):
     """Full-color 3x3 sheet -> dict name -> premultiplied RGBA float32 array.
-    Background = near-white pixels connected to the border (a white beard
-    inside the face survives). Labels are dropped as small stray blobs."""
+    Within each cell the largest ink component is the face, which drops any
+    label text; interior holes are filled so a white beard on a white page
+    survives."""
     from PIL import Image
     from scipy import ndimage
 
     img = np.asarray(Image.open(path).convert("RGB")).astype(np.float32)
     ink = img.min(axis=2) < 235
-    # find the 9 face blobs anywhere on the sheet (ignores grid lines/clipping)
-    grown = ndimage.binary_closing(ink, iterations=3)
-    lab, n = ndimage.label(grown)
-    comps = []
-    for i, sl in enumerate(ndimage.find_objects(lab), 1):
-        size = (lab[sl] == i).sum()
-        comps.append((size, i, sl))
-    comps.sort(reverse=True)
-    comps = comps[:9]
-    if len(comps) < 9:
-        raise ValueError(f"found only {len(comps)} face blobs, need 9")
-    # order into 3 rows of 3 by position
-    items = []
-    for size, i, (ys, xs) in comps:
-        items.append(((ys.start + ys.stop) / 2, (xs.start + xs.stop) / 2, i, (ys, xs)))
-    items.sort()
-    rows = [sorted(items[k:k + 3], key=lambda t: t[1]) for k in (0, 3, 6)]
+    if not ink.any():
+        raise ValueError("sheet looks blank")
+
     cells = {}
     for idx, name in enumerate(SPRITE_NAMES):
-        _, _, ci, (ys, xs) = rows[idx // 3][idx % 3]
-        pad = 6
-        y0, y1 = max(0, ys.start - pad), min(img.shape[0], ys.stop + pad)
-        x0, x1 = max(0, xs.start - pad), min(img.shape[1], xs.stop + pad)
-        cell = img[y0:y1, x0:x1]
-        # re-isolate in raw ink so label text bridged by the closing step drops
-        raw = ink[y0:y1, x0:x1] & (lab[y0:y1, x0:x1] == ci)
-        lab3, n3 = ndimage.label(raw)
-        if n3 > 1:
-            sizes3 = ndimage.sum(raw, lab3, range(1, n3 + 1))
-            keep = int(np.argmax(sizes3)) + 1
-            # keep the face plus any sizable satellite (a detached pom-pom),
-            # but drop small text blobs
-            mask = np.isin(lab3, [k + 1 for k in range(n3)
-                                  if k + 1 == keep or sizes3[k] > sizes3.max() * 0.05])
+        y0, y1, x0, x1 = _cell_boxes(ink)[idx]
+        sub = ink[y0:y1, x0:x1]
+        if not sub.any():
+            raise ValueError(f"cell {idx + 1} ({name}) is empty — "
+                             "is this a 3x3 sheet?")
+        # Label on the raw ink: closing first would weld a caption sitting a
+        # few pixels above the artwork onto it, and the size filter could then
+        # no longer drop the text (it rendered above the face in the video).
+        lab, n = ndimage.label(sub)
+        if n > 1:
+            sizes = ndimage.sum(sub, lab, range(1, n + 1))
+            keep = int(np.argmax(sizes)) + 1
+            mask = np.isin(lab, [k + 1 for k in range(n)
+                                 if k + 1 == keep or sizes[k] > sizes.max() * 0.05])
         else:
-            mask = lab3 > 0
-        # fill interior: white areas inside the outline (a white beard on a
-        # white page) become part of the silhouette
-        fg = ndimage.binary_fill_holes(mask)
+            mask = lab > 0
+        ys, xs = np.where(mask)
+        pad = 6
+        cy0, cy1 = max(0, ys.min() - pad), min(sub.shape[0], ys.max() + pad)
+        cx0, cx1 = max(0, xs.min() - pad), min(sub.shape[1], xs.max() + pad)
+        cell = img[y0 + cy0:y0 + cy1, x0 + cx0:x0 + cx1]
+        fg = ndimage.binary_fill_holes(mask[cy0:cy1, cx0:cx1])
         alpha = ndimage.gaussian_filter(fg.astype(np.float32), 1.0)
         cells[name] = (cell * alpha[..., None] / 255.0, alpha)
-    # rough placement on a common canvas by content bbox center
+
+    # place on a common canvas by content bbox centre
     boxes = {}
     for name, (rgb, a) in cells.items():
         ys, xs = np.where(a > 0.5)
@@ -173,7 +200,7 @@ def slice_sheet_color(path, label_trim=0.16):
         rgba[oy:oy + y1 - y0 + 1, ox:ox + x1 - x0 + 1, 3] = a[y0:y1 + 1, x0:x1 + 1]
         out[name] = rgba
     # refine: register each sprite to REST on the head region (top 55%) so
-    # hard pose cuts don't make the head jitter (mouth changes move bboxes)
+    # pose changes don't make the head jitter
     ref = out["REST"][:int(H * 0.55), :, 3][::2, ::2]
     for name in SPRITE_NAMES:
         if name == "REST":
@@ -182,9 +209,9 @@ def slice_sheet_color(path, label_trim=0.16):
         best, bdy, bdx = -1.0, 0, 0
         for dy in range(-8, 9):
             for dx in range(-8, 9):
-                s = (np.roll(np.roll(a, dy, 0), dx, 1) * ref).sum()
-                if s > best:
-                    best, bdy, bdx = s, dy, dx
+                sc = (np.roll(np.roll(a, dy, 0), dx, 1) * ref).sum()
+                if sc > best:
+                    best, bdy, bdx = sc, dy, dx
         out[name] = np.roll(np.roll(out[name], bdy * 2, axis=0), bdx * 2, axis=1)
     return out
 
