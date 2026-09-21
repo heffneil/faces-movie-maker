@@ -15,6 +15,7 @@ draw as a 3×3 phoneme sheet.
 | `sprite.py` | Sprite-sheet engine: phoneme-timed mouth poses, smooth SDF morphing, squash & stretch, random blinks |
 | `pumpkin.py` | Procedurally drawn jack-o'-lantern / ghost face (no sheet needed) |
 | `ghost.py` | Animate a single cartoon image by stretching its mouth region |
+| `facesheet.py` | Turn ONE photo into a 9-viseme sheet: cartoonify it, then synthesise the mouths |
 | `talk.py` | Photo-realistic talking head from one photo (requires SadTalker, see below) |
 
 ## Setup
@@ -47,6 +48,17 @@ First run downloads the Kokoro TTS model (~300 MB) from HuggingFace.
    L    MBP  O
    U    WQ   etc/rest
    ```
+
+   Only have one picture of the face? `facesheet.py` builds the sheet from it:
+
+   ```bash
+   .venv/bin/python facesheet.py face.png --out sheet.png
+   ```
+
+   It flattens the shading (painting mouths onto smooth 3D-ish shading looks
+   pasted on), keys the background to white, then synthesises the nine mouths
+   by stretching the jaw and drawing a shaded mouth with teeth. Good enough to
+   animate; nine drawn poses still look better.
 
    Black-on-white ink or full-color artwork both work. (Image generators
    produce these well — ask for "the exact same face 9 times in a 3x3 grid,
