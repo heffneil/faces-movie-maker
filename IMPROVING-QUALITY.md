@@ -43,6 +43,15 @@ time. It slices a 3x3 sheet into 9 mouth poses and builds frames from them.
 - **Integer-pixel idle motion.** Held poses became pixel-identical for several
   frames, which reads as low frame rate even though the file is 30 fps.
 
+- **Filtering a photograph into "cartoon" art.** Tried three ways on one
+  portrait: k-means colour quantisation (banded the background into rings,
+  destroyed the glasses and eyes), `cv2.edgePreservingFilter` and
+  `cv2.stylization` (smooth a photo, but produce no flat colour areas and no
+  linework). Mouths drawn onto any of them read as pasted on, because flat
+  shapes sit badly over smooth shading. The fix is not a better filter — it is
+  a cartoon source. Given real flat art with bold outlines, the same mouth
+  synthesis in `facesheet.py` looks native.
+
 - **Asking for more artwork.** The input stays at the 9 Papagayo visemes
   (AI/E/FV/L/MBP/O/U/WQ/rest). Denser sheets, extra half-open poses and separate
   closed-eye artwork are off the table — not for xLights compatibility (the

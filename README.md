@@ -52,13 +52,19 @@ First run downloads the Kokoro TTS model (~300 MB) from HuggingFace.
    Only have one picture of the face? `facesheet.py` builds the sheet from it:
 
    ```bash
-   .venv/bin/python facesheet.py face.png --out sheet.png
+   .venv/bin/python facesheet.py face.png --out sheet.png --preview AI
    ```
 
-   It flattens the shading (painting mouths onto smooth 3D-ish shading looks
-   pasted on), keys the background to white, then synthesises the nine mouths
-   by stretching the jaw and drawing a shaded mouth with teeth. Good enough to
-   animate; nine drawn poses still look better.
+   It inpaints the existing mouth away and draws nine mouths back in the
+   artwork's own style — flat fills, an outline matched to the source
+   linework, teeth and a tongue — leaving every other pixel of the head
+   identical. Give it **flat cartoon art**: filters can smooth a photograph
+   but cannot turn it into flat colour and linework, and mouths drawn over
+   smooth shading read as pasted on. (`--from-photo` prefilters a photo, but
+   cartoonifying the face properly first works far better.)
+
+   Check placement with `--preview AI`; override with `--lip`/`--cx`/`--half`
+   if the detector picks the wrong row.
 
    Black-on-white ink or full-color artwork both work. (Image generators
    produce these well — ask for "the exact same face 9 times in a 3x3 grid,
