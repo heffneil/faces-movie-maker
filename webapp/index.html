@@ -273,6 +273,14 @@ async function loadRenders() {
     || '<div class="hint">Rendered videos appear here.</div>';
 }
 loadSheets(); loadRenders();
+
+// Nothing pushes changes to an open page, so a sheet or render added from
+// another tab, another machine, or the API would not appear until a manual
+// reload. Re-sync whenever this tab comes back to the foreground.
+window.addEventListener('focus', () => { loadSheets(); loadRenders(); });
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) { loadSheets(); loadRenders(); }
+});
 </script>
 </body>
 </html>
