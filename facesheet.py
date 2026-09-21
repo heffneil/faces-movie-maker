@@ -26,17 +26,23 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-# open, width, roundness, upper teeth, tongue, lower teeth
+# open, width, roundness, upper teeth, tongue, lower teeth, lower-lip boost
+#
+# Sizes are chosen so the three round shapes stay tellable apart at a glance
+# on a display set: O is the big circle, U a distinctly taller-than-wide oval,
+# WQ a small tight pucker. FV is the labiodental — upper teeth resting on the
+# lower lip — so its teeth nearly fill the gap and its lower lip is thickened,
+# otherwise it collapses into something that reads as a closed line.
 POSES = {
-    'AI':   (1.00, 0.96, 0.00, 0.36, 0.34, 0.20),
-    'E':    (0.46, 1.16, 0.00, 0.74, 0.00, 0.30),
-    'FV':   (0.16, 0.98, 0.00, 0.95, 0.00, 0.00),
-    'L':    (0.58, 0.84, 0.05, 0.34, 0.80, 0.00),
-    'MBP':  (0.00, 1.00, 0.00, 0.00, 0.00, 0.00),
-    'O':    (0.74, 0.60, 0.90, 0.10, 0.00, 0.00),
-    'U':    (0.52, 0.50, 1.00, 0.00, 0.00, 0.00),
-    'WQ':   (0.34, 0.46, 1.00, 0.00, 0.00, 0.00),
-    'REST': (0.10, 1.00, 0.00, 0.00, 0.00, 0.00),
+    'AI':   (1.00, 0.96, 0.00, 0.36, 0.34, 0.20, 0.0),
+    'E':    (0.56, 1.16, 0.00, 0.78, 0.00, 0.30, 0.0),
+    'FV':   (0.28, 0.98, 0.00, 1.10, 0.00, 0.00, 1.1),
+    'L':    (0.58, 0.84, 0.05, 0.34, 0.80, 0.00, 0.0),
+    'MBP':  (0.00, 1.00, 0.00, 0.00, 0.00, 0.00, 0.0),
+    'O':    (0.82, 0.64, 0.90, 0.10, 0.00, 0.00, 0.0),
+    'U':    (0.54, 0.44, 1.00, 0.00, 0.00, 0.00, 0.0),
+    'WQ':   (0.32, 0.30, 1.00, 0.00, 0.00, 0.00, 0.0),
+    'REST': (0.10, 1.00, 0.00, 0.00, 0.00, 0.00, 0.0),
 }
 ORDER = ['AI', 'E', 'FV', 'L', 'MBP', 'O', 'U', 'WQ', 'REST']
 SS = 3                                    # supersample factor for crisp edges
@@ -78,7 +84,7 @@ def erase_mouth(bgr, lip, cx):
 def draw_mouth(p, size, half, openmax, lw, pal):
     """One mouth as an RGBA patch: flat fills, bold outline, drawn oversized
     and downscaled so the edges anti-alias like the source art."""
-    op, wf, rnd, th, tg, bt = p
+    op, wf, rnd, th, tg, bt, llip = p
     bw, bh = size
     W2, H2 = bw * SS, bh * SS
     lay = Image.new('RGBA', (W2, H2), (0, 0, 0, 0))
@@ -91,7 +97,7 @@ def draw_mouth(p, size, half, openmax, lw, pal):
 
     pad = lwq * 1.5
     d.ellipse([ox - mw - pad * 1.15, oy - mh - pad,
-               ox + mw + pad * 1.15, oy + mh + pad], fill=lipc)
+               ox + mw + pad * 1.15, oy + mh + pad * (1 + llip * 2.2)], fill=lipc)
     if op < 0.02:                                     # closed: a lip line only
         d.line([ox - mw, oy, ox + mw, oy], fill=ink, width=int(lwq))
         return lay.resize((bw, bh), Image.LANCZOS)
@@ -114,6 +120,14 @@ def draw_mouth(p, size, half, openmax, lw, pal):
                     ox + mw * 0.92, oy + mh + mh * 0.45], fill=pal['teeth'] + (255,))
     lay.paste(det, (0, 0),
               Image.composite(det.split()[3], Image.new('L', (W2, H2), 0), inner))
+    if th > 1.0:      # labiodental: a shadow keeps the teeth off the lower lip
+        sd = Image.new('RGBA', (W2, H2), (0, 0, 0, 0))
+        ImageDraw.Draw(sd).ellipse(
+            [ox - mw * 0.99, oy - mh + 1.45 * mh * th - lwq * 1.1,
+             ox + mw * 0.99, oy - mh + 1.45 * mh * th + lwq * 1.1],
+            fill=pal['dark'] + (255,))
+        lay.paste(sd, (0, 0),
+                  Image.composite(sd.split()[3], Image.new('L', (W2, H2), 0), inner))
     d.ellipse(box, outline=ink, width=int(lwq))
     return lay.resize((bw, bh), Image.LANCZOS)
 
