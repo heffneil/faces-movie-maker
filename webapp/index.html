@@ -104,7 +104,12 @@
           <option value="color">Full colour — keep the artwork</option>
         </select></div>
       <div><label>Size</label>
-        <select id="size1"><option>1280x720</option><option selected>1920x1080</option></select></div>
+        <select id="size1">
+          <option>1280x720</option>
+          <option selected>1920x1080</option>
+          <option>1080x1080 — square</option>
+          <option>1080x1920 — portrait</option>
+        </select></div>
       <div><label>FPS</label>
         <select id="fps1"><option selected>30</option><option>60</option></select></div>
     </div>
@@ -138,7 +143,12 @@ Ain't nothin' but a heartache"></textarea>
           <option value="color">Full colour — keep the artwork</option>
         </select></div>
       <div><label>Size</label>
-        <select id="size2"><option>1280x720</option><option selected>1920x1080</option></select></div>
+        <select id="size2">
+          <option>1280x720</option>
+          <option selected>1920x1080</option>
+          <option>1080x1080 — square</option>
+          <option>1080x1920 — portrait</option>
+        </select></div>
       <div><label>FPS</label>
         <select id="fps2"><option selected>30</option><option>60</option></select></div>
     </div>
@@ -249,7 +259,7 @@ document.getElementById('goTts').onclick = () => {
     ['/api/render/tts', {method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({sheet: selSheet, text: document.getElementById('ttsText').value,
         voice: document.getElementById('voice').value,
-        style: document.getElementById('style1').value, size: document.getElementById('size1').value,
+        style: document.getElementById('style1').value, size: document.getElementById('size1').value.split(' ')[0],
         fps: document.getElementById('fps1').value})}]);
 };
 
@@ -264,7 +274,7 @@ document.getElementById('goSong').onclick = () => {
   fd.append('lyrics', document.getElementById('lyrics').value);
   if (document.getElementById('autoAlign').checked && !xt) fd.append('align', '1');
   fd.append('style', document.getElementById('style2').value);
-  fd.append('size', document.getElementById('size2').value);
+  fd.append('size', document.getElementById('size2').value.split(' ')[0]);
   fd.append('fps', document.getElementById('fps2').value);
   startRender(document.getElementById('goSong'), document.getElementById('job2'),
     ['/api/render/song', {method:'POST', body: fd}]);

@@ -287,6 +287,17 @@ class RegionMorpher:
         self.k = k
         self.dark = int(np.argmin(cent.sum(-1)))       # mouth interior cluster
 
+        # Is this artwork actually flat? The layered morph rebuilds the mouth
+        # from k flat colours, which is faithful for flat cartoon art but
+        # turns shaded or textured art into black speckle, because each
+        # pixel's colour class flips erratically and the distance field of a
+        # speckled mask is meaningless. Measure how well the palette
+        # reconstructs the region and fall back to a plain blend if it cannot.
+        px_all = region.reshape(-1, 3)
+        err = np.sqrt(((px_all[:, None] - cent[None]) ** 2).sum(-1).min(1))
+        self.residual = float(np.mean(err))
+        self.flat = self.residual < 0.065
+
         # --- per pose: a distance field per colour layer, plus interior area
         self.fields, self.area, counts = {}, {}, np.zeros(k)
         for i, name in enumerate(self.names):
@@ -322,8 +333,8 @@ class RegionMorpher:
         if self.index[a] > self.index[b]:
             a, b, w = b, a, 1.0 - w
         out = (1 - w) * self.sprites[a] + w * self.sprites[b]
-        if self.box is None or w <= 0.0:
-            return out
+        if self.box is None or w <= 0.0 or not self.flat:
+            return out                    # shaded art: a plain blend beats speckle
         y0, y1, x0, x1 = self.box
 
         if asym:
@@ -351,11 +362,20 @@ class RegionMorpher:
 
 
 def compose_color(state, W, H, wob, stretch):
-    """Premultiplied RGBA float array -> full frame over black."""
+    """Premultiplied RGBA float array -> full frame over black.
+
+    Scales the artwork itself, not the canvas it sits on: the canvas carries
+    padding for registration, so fitting that left the art marooned inside a
+    black border.
+    """
     from PIL import Image
 
+    solid = state[..., 3] > 0.5
+    if solid.any():
+        ys, xs = np.where(solid)
+        state = state[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
     sh, sw = state.shape[:2]
-    scale = min(W * 0.8 / sw, H * 0.8 / sh)
+    scale = min(W * 0.92 / sw, H * 0.92 / sh)
     tw = int(sw * scale * (1 - 0.4 * stretch))
     th = int(sh * scale * (1 + stretch))
     img = Image.fromarray((np.clip(state[..., :3], 0, 1) * 255).astype(np.uint8))
@@ -523,7 +543,7 @@ def colorize(field, style, W, H, wob, stretch=0.0):
 
     c = STYLES[style]
     sh, sw = field.shape
-    scale = min(W * 0.8 / sw, H * 0.8 / sh)
+    scale = min(W * 0.92 / sw, H * 0.92 / sh)
     tw = int(sw * scale * (1 - 0.4 * stretch))
     th = int(sh * scale * (1 + stretch))
     field = np.clip(field, -24.0, 24.0)  # bound jumps so bicubic doesn't ring
