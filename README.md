@@ -72,7 +72,12 @@ First run downloads the Kokoro TTS model (~300 MB) from HuggingFace.
 
 2. **Speak mode** — type text, pick a voice, render.
 
-3. **Sing mode** — upload audio (mp3/wav/m4a) plus timing:
+3. **Timing mode** — build an xLights `.xtiming` track from a song plus its
+   lyrics, with no video. Three layers (phrases / words / phonemes) on a 25 ms
+   grid, downloadable under the track name you give it. Use it when you want a
+   timing track for xLights itself rather than a rendered face.
+
+4. **Sing mode** — upload audio (mp3/wav/m4a) plus timing:
    - **xLights `.xtiming` file** (best): a phoneme layer (AI/E/FV/L/MBP/O/U/WQ/etc
      labels) drives the mouth frame-accurately; a words layer is phonemized
      inside each word's window.

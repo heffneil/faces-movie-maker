@@ -216,9 +216,8 @@ def render_song():
             JOBS[jid]["stage"] = "aligning lyrics on node7 (~2 min per song)…"
             words = align_lyrics(raw, lrc)
             JOBS[jid]["stage"] = "building timing…"
-            with open(os.path.join(RENDERS, f"{jid}.xtiming"), "w") as fh:
-                fh.write(words_to_xtiming(words, label))
-            JOBS[jid]["xtiming"] = f"/renders/{jid}.xtiming"
+            save_timing(jid, words, label)
+            JOBS[jid]["xtiming"] = f"/timings/{jid}"
             track = sprite_track(aligned_word_tokens(words), env, n, fps)
             JOBS[jid]["stage"] = None
         else:
@@ -232,6 +231,89 @@ def render_song():
 
     run_job(jid, work)
     return jsonify({"job": jid})
+
+
+def save_timing(jid, words, name):
+    """Write an xtiming plus a sidecar recording its track name, so the file
+    can be offered for download under that name rather than a job id."""
+    with open(os.path.join(RENDERS, f"{jid}.xtiming"), "w") as fh:
+        fh.write(words_to_xtiming(words, name))
+    with open(os.path.join(RENDERS, f"{jid}.timing.json"), "w") as fh:
+        json.dump({"name": name, "words": len(words), "created": time.time()}, fh)
+
+
+def timing_meta(jid):
+    path = os.path.join(RENDERS, f"{jid}.timing.json")
+    if os.path.exists(path):
+        with open(path) as fh:
+            return json.load(fh)
+    # older files predate the sidecar: the track name is in the XML itself,
+    # which beats offering the download as a job id
+    xt = os.path.join(RENDERS, f"{jid}.xtiming")
+    name = jid
+    try:
+        import xml.etree.ElementTree as ET
+        name = (ET.parse(xt).getroot().get("name") or jid).strip() or jid
+    except Exception:
+        pass
+    return {"name": name, "words": None, "created": os.path.getmtime(xt)}
+
+
+def safe_filename(name):
+    keep = "".join(c if (c.isalnum() or c in " -_") else "_" for c in name).strip()
+    return (keep or "lyrics") + ".xtiming"
+
+
+@app.post("/api/timing")
+def make_timing():
+    """Build an xLights timing track from audio + lyrics, with no video."""
+    name = (request.form.get("name") or "").strip() or "Lyrics"
+    lrc = request.form.get("lyrics", "")
+    audio_file = request.files.get("audio")
+    if not audio_file or not audio_file.filename:
+        return jsonify({"error": "choose an audio file"}), 400
+    if not lrc.strip():
+        return jsonify({"error": "paste the lyrics to align"}), 400
+
+    raw = os.path.join(UPLOADS, uuid.uuid4().hex[:10]
+                       + os.path.splitext(audio_file.filename)[1])
+    audio_file.save(raw)
+    jid = uuid.uuid4().hex[:10]
+    JOBS[jid] = {"status": "running", "progress": 0, "label": name,
+                 "stage": "aligning lyrics on node7 (~2 min per song)…",
+                 "created": time.time()}
+
+    def work():
+        words = align_lyrics(raw, lrc)
+        JOBS[jid]["stage"] = "building timing track…"
+        save_timing(jid, words, name)
+        JOBS[jid]["xtiming"] = f"/timings/{jid}"
+        JOBS[jid]["progress"] = 100
+        JOBS[jid]["stage"] = None
+
+    run_job(jid, work)
+    return jsonify({"job": jid})
+
+
+@app.get("/api/timings")
+def list_timings():
+    out = []
+    for f in sorted(os.listdir(RENDERS),
+                    key=lambda f: -os.path.getmtime(os.path.join(RENDERS, f))):
+        if f.endswith(".xtiming"):
+            jid = f[:-len(".xtiming")]
+            m = timing_meta(jid)
+            out.append({"url": f"/timings/{jid}", "name": m["name"],
+                        "words": m.get("words"), "mtime": m["created"]})
+    return jsonify(out)
+
+
+@app.get("/timings/<jid>")
+def timing_file(jid):
+    if not os.path.exists(os.path.join(RENDERS, f"{jid}.xtiming")):
+        return jsonify({"error": "not found"}), 404
+    return send_from_directory(RENDERS, f"{jid}.xtiming", as_attachment=True,
+                               download_name=safe_filename(timing_meta(jid)["name"]))
 
 
 @app.get("/api/jobs/<jid>")
@@ -254,7 +336,7 @@ def list_renders():
             row = {"url": f"/renders/{f}", "label": meta.get("label", f),
                    "mtime": os.path.getmtime(os.path.join(RENDERS, f))}
             if os.path.exists(os.path.join(RENDERS, f"{jid}.xtiming")):
-                row["xtiming"] = f"/renders/{jid}.xtiming"
+                row["xtiming"] = f"/timings/{jid}"
             out.append(row)
     return jsonify(out)
 

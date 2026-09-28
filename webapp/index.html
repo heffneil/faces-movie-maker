@@ -81,6 +81,7 @@
     <div class="tabs">
       <button id="tabSpeak" onclick="setMode('speak')">🗣 Speak (text → voice)</button>
       <button id="tabSing" onclick="setMode('sing')">🎵 Sing (song + lyrics)</button>
+      <button id="tabTiming" onclick="setMode('timing')">⏱ Timing track only</button>
     </div>
   <div id="panelSpeak">
     <label>What should it say?</label>
@@ -155,6 +156,25 @@ Ain't nothin' but a heartache"></textarea>
     <button id="goSong">Render</button>
     <div class="job" id="job2"></div>
   </div>
+
+  <div id="panelTiming" hidden>
+    <div class="hint" style="margin:0 0 10px">Builds an xLights <b>.xtiming</b> track
+      from a song and its lyrics — no video. Import it into xLights and point your
+      Face effects at it.</div>
+    <label>Audio file (mp3 / wav / m4a)</label>
+    <input type="file" id="tAudio" accept="audio/*,.mp3,.m4a,.wav">
+    <label>Timing track name (as it will appear in xLights)</label>
+    <input type="text" id="tName" placeholder="All The Small Things Lyrics">
+    <label>Lyrics</label>
+    <textarea id="tLyrics" placeholder="Paste the lyrics, one line per sung line.
+Section markers in [brackets] are ignored."></textarea>
+    <div class="hint">Alignment runs on the node7 aligner, roughly 2 minutes per song,
+      one song at a time. You get three layers: phrases, words and phonemes.</div>
+    <button id="goTiming">Build timing track</button>
+    <div class="job" id="job3"></div>
+    <h2 style="margin-top:22px">Timing tracks</h2>
+    <div id="timings"></div>
+  </div>
   </section>
 
   <section id="gallery">
@@ -174,8 +194,11 @@ let selSheet = localStorage.getItem('sheet') || null;
 function setMode(m) {
   document.getElementById('panelSpeak').hidden = m !== 'speak';
   document.getElementById('panelSing').hidden = m !== 'sing';
+  document.getElementById('panelTiming').hidden = m !== 'timing';
   document.getElementById('tabSpeak').classList.toggle('on', m === 'speak');
   document.getElementById('tabSing').classList.toggle('on', m === 'sing');
+  document.getElementById('tabTiming').classList.toggle('on', m === 'timing');
+  if (m === 'timing') loadTimings();
   try { localStorage.setItem('mode', m); } catch (e) {}
 }
 setMode(localStorage.getItem('mode') || 'speak');
@@ -280,6 +303,29 @@ document.getElementById('goSong').onclick = () => {
     ['/api/render/song', {method:'POST', body: fd}]);
 };
 
+document.getElementById('goTiming').onclick = () => {
+  const f = document.getElementById('tAudio').files[0];
+  if (!f) return alert('Choose an audio file');
+  if (!document.getElementById('tLyrics').value.trim()) return alert('Paste the lyrics');
+  const fd = new FormData();
+  fd.append('audio', f);
+  fd.append('name', document.getElementById('tName').value);
+  fd.append('lyrics', document.getElementById('tLyrics').value);
+  startRender(document.getElementById('goTiming'), document.getElementById('job3'),
+    ['/api/timing', {method:'POST', body: fd}]);
+};
+
+async function loadTimings() {
+  let list = [];
+  try { list = await (await fetch('/api/timings')).json(); } catch (e) { return; }
+  document.getElementById('timings').innerHTML = list.map(t => `
+    <div class="sheet" style="cursor:default">
+      <span class="nm">${t.name}${t.words ? ` — ${t.words} words` : ''}</span>
+      <span class="hint" style="margin:0">${new Date(t.mtime*1000).toLocaleString([], {month:'short', day:'numeric', hour:'numeric', minute:'2-digit'})}</span>
+      <a class="ghost" style="text-decoration:none; padding:4px 10px" href="${t.url}" download>download</a>
+    </div>`).join('') || '<div class="hint">No timing tracks yet.</div>';
+}
+
 async function loadRenders() {
   const list = await (await fetch('/api/renders')).json();
   document.getElementById('vids').innerHTML = list.map(v => `
@@ -295,9 +341,9 @@ loadSheets(); loadRenders();
 // Nothing pushes changes to an open page, so a sheet or render added from
 // another tab, another machine, or the API would not appear until a manual
 // reload. Re-sync whenever this tab comes back to the foreground.
-window.addEventListener('focus', () => { loadSheets(); loadRenders(); });
+window.addEventListener('focus', () => { loadSheets(); loadRenders(); loadTimings(); });
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) { loadSheets(); loadRenders(); }
+  if (!document.hidden) { loadSheets(); loadRenders(); loadTimings(); }
 });
 </script>
 </body>

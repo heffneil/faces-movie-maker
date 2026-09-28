@@ -645,31 +645,83 @@ def aligned_word_tokens(words):
     return tokens
 
 
-def words_to_xtiming(words, name="lyrics"):
-    """Aligner word timings -> xLights .xtiming XML (words + phoneme layers)."""
+def words_to_xtiming(words, name="lyrics", gap_ms=None, grid_ms=25):
+    """Aligned word timings -> an xLights .xtiming document.
+
+    Writes the three layers xLights expects for a singing face, top to bottom:
+    phrases, words, then Papagayo phonemes. Phrases are cut wherever there is
+    a gap of at least `gap_ms` between words, which follows the sung lines
+    without needing the original line breaks. Left as None it self-tunes from
+    the song's own gap distribution: a fixed threshold gave four phrases for a
+    whole track on one alignment and forty on another, because how much silence
+    sits between sung lines varies with the song and the aligner. Marks are
+    quantised to a `grid_ms` grid, as xLights' own exports are.
+    """
     from xml.sax.saxutils import quoteattr
     from kokoro import KPipeline
-    g2p = KPipeline(lang_code="a", model=False)
 
-    word_fx, ph_fx = [], []
-    for w in words:
-        s, e = int(w["start_ms"]), int(w["end_ms"])
-        word_fx.append((s, e, w["label"]))
-        for t0, t1, phonemes in _spread_words(w["label"], s / 1000, e / 1000, g2p):
-            # collapse each word's phonemes into Papagayo viseme segments
+    words = sorted((w for w in words if w["end_ms"] > w["start_ms"]),
+                   key=lambda w: w["start_ms"])
+    if not words:
+        raise ValueError("no usable word timings")
+
+    def q(ms):
+        return int(round(ms / grid_ms) * grid_ms)
+
+    if gap_ms is None:
+        gaps = [b["start_ms"] - a["end_ms"] for a, b in zip(words, words[1:])]
+        gap_ms = int(np.clip(np.percentile(gaps, 88) if gaps else 400, 150, 800))
+
+    # --- words layer, clipped so neighbours never overlap
+    word_fx = []
+    for i, w in enumerate(words):
+        s0, e0 = q(w["start_ms"]), q(w["end_ms"])
+        if i + 1 < len(words):
+            e0 = min(e0, q(words[i + 1]["start_ms"]))
+        if e0 <= s0:
+            e0 = s0 + grid_ms
+        word_fx.append((s0, e0, w["label"]))
+
+    # --- phrases: group words, breaking on a silent gap
+    phrase_fx, group = [], [word_fx[0]]
+    for prev, cur in zip(word_fx, word_fx[1:]):
+        if cur[0] - prev[1] >= gap_ms:
+            phrase_fx.append((group[0][0], group[-1][1],
+                              " ".join(g[2] for g in group)))
+            group = []
+        group.append(cur)
+    if group:
+        phrase_fx.append((group[0][0], group[-1][1],
+                          " ".join(g[2] for g in group)))
+
+    # --- phonemes: g2p each word, spread over its own window, then collapse
+    #     consecutive marks that map to the same viseme
+    g2p = KPipeline(lang_code="a", model=False)
+    ph_fx = []
+    for s0, e0, label in word_fx:
+        segs = []
+        for t0, t1, phonemes in _spread_words(label, s0 / 1000, e0 / 1000, g2p):
             ph = [c for c in phonemes if c not in SKIP]
             if not ph:
                 continue
             dur = (t1 - t0) / len(ph)
-            segs = []
             for k, c in enumerate(ph):
                 lab = PH2SPRITE.get(c, "REST")
                 lab = "etc" if lab == "REST" else lab
+                a, b = t0 + k * dur, t0 + (k + 1) * dur
                 if segs and segs[-1][2] == lab:
-                    segs[-1] = (segs[-1][0], t0 + (k + 1) * dur, lab)
+                    segs[-1] = (segs[-1][0], b, lab)
                 else:
-                    segs.append((t0 + k * dur, t0 + (k + 1) * dur, lab))
-            ph_fx.extend((int(a * 1000), int(b * 1000), lab) for a, b, lab in segs)
+                    segs.append((a, b, lab))
+        for a, b, lab in segs:
+            qa, qb = q(a * 1000), q(b * 1000)
+            if qb <= qa:
+                qb = qa + grid_ms
+            if ph_fx and qa < ph_fx[-1][1]:
+                qa = ph_fx[-1][1]
+                if qb <= qa:
+                    continue
+            ph_fx.append((qa, qb, lab))
 
     def layer(effects):
         rows = "".join(
@@ -678,8 +730,9 @@ def words_to_xtiming(words, name="lyrics"):
         return f"   <EffectLayer>\n{rows}   </EffectLayer>\n"
 
     return (f'<?xml version="1.0" encoding="UTF-8"?>\n'
-            f'<timing name={quoteattr(name)} SourceVersion="faces-movie-maker">\n'
-            f"{layer(word_fx)}{layer(ph_fx)}</timing>\n")
+            f'<timing name={quoteattr(name)} subType="" '
+            f'SourceVersion="faces-movie-maker">\n'
+            f"{layer(phrase_fx)}{layer(word_fx)}{layer(ph_fx)}</timing>\n")
 
 
 def lyric_tokens(lrc_text, total_dur):
