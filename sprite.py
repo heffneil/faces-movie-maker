@@ -37,6 +37,9 @@ PH2SPRITE = {
 }
 SKIP = set("ˈˌː ̩ᵊ ")
 
+# written into xtiming exports; xLights reads this for compatibility
+XLIGHTS_VERSION = "2026.16"
+
 
 def slice_sheet(path, label_trim=0.16):
     """Return dict name -> binary mask (bool array), aligned to common canvas."""
@@ -729,9 +732,61 @@ def words_to_xtiming(words, name="lyrics", gap_ms=None, grid_ms=25):
             for s, e, l in effects)
         return f"   <EffectLayer>\n{rows}   </EffectLayer>\n"
 
+    # SourceVersion is a compatibility field xLights reads; emit a version
+    # string it recognises rather than our own name, which it cannot parse.
     return (f'<?xml version="1.0" encoding="UTF-8"?>\n'
             f'<timing name={quoteattr(name)} subType="" '
-            f'SourceVersion="faces-movie-maker">\n'
+            f'SourceVersion="{XLIGHTS_VERSION}">\n'
+            f"{layer(phrase_fx)}{layer(word_fx)}{layer(ph_fx)}</timing>\n")
+
+
+def repair_xtiming(xml_text, name=None, gap_ms=None, grid_ms=25):
+    """Upgrade a two-layer xtiming (words + phonemes) to the three layers
+    xLights expects.
+
+    Files written before the phrases layer existed import wrongly: xLights
+    reads layer one as phrases and layer two as words, leaving no phoneme
+    layer, so singing faces do not animate. The original word and phoneme
+    timings are preserved exactly; only a phrases layer is derived, by
+    grouping words on silent gaps.
+    """
+    import xml.etree.ElementTree as ET
+    from xml.sax.saxutils import quoteattr
+
+    root = ET.fromstring(xml_text)
+    layers = [[(int(e.get("starttime")), int(e.get("endtime")), e.get("label") or "")
+                for e in l.iter("Effect")] for l in root.iter("EffectLayer")]
+    layers = [l for l in layers if l]
+    if len(layers) >= 3:
+        return xml_text                      # already correct, leave alone
+    if len(layers) != 2:
+        raise ValueError(f"expected 2 layers to repair, found {len(layers)}")
+    word_fx, ph_fx = layers
+
+    if gap_ms is None:
+        gaps = [b[0] - a[1] for a, b in zip(word_fx, word_fx[1:])]
+        gap_ms = int(np.clip(np.percentile(gaps, 88) if gaps else 400, 150, 800))
+    phrase_fx, group = [], [word_fx[0]]
+    for prev, cur in zip(word_fx, word_fx[1:]):
+        if cur[0] - prev[1] >= gap_ms:
+            phrase_fx.append((group[0][0], group[-1][1],
+                              " ".join(g[2] for g in group)))
+            group = []
+        group.append(cur)
+    if group:
+        phrase_fx.append((group[0][0], group[-1][1],
+                          " ".join(g[2] for g in group)))
+
+    def layer(effects):
+        rows = "".join(
+            f'      <Effect label={quoteattr(l)} starttime="{s}" endtime="{e}"/>\n'
+            for s, e, l in effects)
+        return f"   <EffectLayer>\n{rows}   </EffectLayer>\n"
+
+    name = name or root.get("name") or "lyrics"
+    return (f'<?xml version="1.0" encoding="UTF-8"?>\n'
+            f'<timing name={quoteattr(name)} subType="" '
+            f'SourceVersion="{XLIGHTS_VERSION}">\n'
             f"{layer(phrase_fx)}{layer(word_fx)}{layer(ph_fx)}</timing>\n")
 
 
