@@ -134,6 +134,10 @@ def run_job(jid, fn):
     def wrap():
         try:
             fn()
+            # Marker written only on success. An output file existing proves
+            # nothing: a render killed part-way leaves a perfectly playable but
+            # truncated mp4, which used to be reported as finished.
+            open(os.path.join(RENDERS, f"{jid}.done"), "w").close()
             JOBS[jid]["status"] = "done"
         except Exception as e:
             JOBS[jid]["status"] = "error"
@@ -336,9 +340,13 @@ def timing_file(jid):
 def job_status(jid):
     if jid in JOBS:
         return jsonify(JOBS[jid])
-    # server restarted mid-poll: report done if the file made it to disk
-    if os.path.exists(os.path.join(RENDERS, f"{jid}.mp4")):
+    # server restarted mid-poll: only a completion marker proves it finished
+    if os.path.exists(os.path.join(RENDERS, f"{jid}.done")):
         return jsonify({"status": "done", "progress": 100, "url": f"/renders/{jid}.mp4"})
+    if os.path.exists(os.path.join(RENDERS, f"{jid}.mp4")):
+        return jsonify({"status": "error", "error":
+                        "render was interrupted (server restarted) and the video "
+                        "is incomplete — render it again"})
     return jsonify({"status": "error", "error": "job lost (server restarted) — render again"})
 
 
@@ -350,7 +358,8 @@ def list_renders():
             jid = f[:-4]
             meta = JOBS.get(jid, {})
             row = {"url": f"/renders/{f}", "label": meta.get("label", f),
-                   "mtime": os.path.getmtime(os.path.join(RENDERS, f))}
+                   "mtime": os.path.getmtime(os.path.join(RENDERS, f)),
+                   "incomplete": not os.path.exists(os.path.join(RENDERS, f"{jid}.done"))}
             if os.path.exists(os.path.join(RENDERS, f"{jid}.xtiming")):
                 row["xtiming"] = f"/timings/{jid}"
             out.append(row)

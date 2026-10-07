@@ -80,7 +80,7 @@
   <section>
     <div class="tabs">
       <button id="tabSpeak" onclick="setMode('speak')">🗣 Speak (text → voice)</button>
-      <button id="tabSing" onclick="setMode('sing')">🎵 Sing (song + lyrics)</button>
+      <button id="tabSing" onclick="setMode('sing')">🎵 Sing (song + .xtiming or lyrics)</button>
       <button id="tabTiming" onclick="setMode('timing')">⏱ Timing track only</button>
     </div>
   <div id="panelSpeak">
@@ -119,13 +119,18 @@
   </div>
 
   <div id="panelSing" hidden>
-    <label>Audio file (mp3 / wav / m4a)</label>
+    <label>1 · Audio file (mp3 / wav / m4a)</label>
     <input type="file" id="songFile" accept="audio/*,.mp3,.m4a,.wav">
-    <label>xLights timing track (.xtiming) — best sync</label>
-    <input type="file" id="xtFile" accept=".xtiming,.xml">
-    <div class="hint">A phoneme layer (AI/E/FV/… labels) drives mouths frame-accurately;
-      a words layer is phonemized inside each word's window.</div>
-    <label>…or lyrics</label>
+
+    <div style="border:1px solid var(--orange); border-radius:10px; padding:12px 14px; margin-top:14px">
+      <label style="margin-top:0; color:var(--orange); font-weight:700">
+        2 · Load an xLights timing track (.xtiming) — best sync</label>
+      <input type="file" id="xtFile" accept=".xtiming,.xml">
+      <div class="hint">Already have a timing track? Drop it here and the mouths follow
+        its phoneme layer frame-accurately. This is the option to use if you have one.</div>
+    </div>
+
+    <label>…or instead, lyrics (no timing track)</label>
     <textarea id="lyrics" placeholder="I want it that way
 Tell me why
 Ain't nothin' but a heartache"></textarea>
@@ -160,7 +165,9 @@ Ain't nothin' but a heartache"></textarea>
   <div id="panelTiming" hidden>
     <div class="hint" style="margin:0 0 10px">Builds an xLights <b>.xtiming</b> track
       from a song and its lyrics — no video. Import it into xLights and point your
-      Face effects at it.</div>
+      Face effects at it.<br>
+      <b>Already have an .xtiming and want a video from it?</b> That is the
+      <b>Sing</b> tab, not this one.</div>
     <label>Audio file (mp3 / wav / m4a)</label>
     <input type="file" id="tAudio" accept="audio/*,.mp3,.m4a,.wav">
     <label>Timing track name (as it will appear in xLights)</label>
@@ -339,7 +346,7 @@ async function loadRenders() {
   const list = await (await fetch('/api/renders')).json();
   document.getElementById('vids').innerHTML = list.map(v => `
     <div class="vid"><video src="${v.url}" controls preload="metadata"></video>
-      <p title="${v.label}">${v.label}</p>
+      <p title="${v.label}">${v.incomplete ? '⚠️ incomplete — ' : ''}${v.label}</p>
       <div class="hint">${new Date(v.mtime * 1000).toLocaleString([], {month:'short', day:'numeric', hour:'numeric', minute:'2-digit'})}</div>
       <a class="hint" href="${v.url}" download>download video</a>
       ${v.xtiming ? ` &nbsp;·&nbsp; <a class="hint" href="${v.xtiming}" download>download .xtiming</a>` : ''}</div>`).join('')
