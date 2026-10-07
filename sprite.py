@@ -740,6 +740,70 @@ def words_to_xtiming(words, name="lyrics", gap_ms=None, grid_ms=25):
             f"{layer(phrase_fx)}{layer(word_fx)}{layer(ph_fx)}</timing>\n")
 
 
+def lyrics_from_xtiming(xml_text):
+    """Recover plain lyric text from an existing timing track.
+
+    Useful as an alignment source: community timing tracks are often cut to a
+    different mix or edit than the mp3 in hand, so the words are right but the
+    timings are not. Pulling the words out and re-aligning them to your own
+    audio keeps the lyrics and fixes the sync.
+
+    Prefers the phrases layer, which preserves line structure; otherwise it
+    rebuilds lines from the words layer by grouping on silent gaps.
+    """
+    import xml.etree.ElementTree as ET
+
+    root = ET.fromstring(xml_text)
+    layers = []
+    for l in root.iter("EffectLayer"):
+        fx = []
+        for e in l.iter("Effect"):
+            lab = (e.get("label") or "").strip()
+            s0 = e.get("starttime") or e.get("startTime")
+            e0 = e.get("endtime") or e.get("endTime")
+            if lab and s0 and e0:
+                fx.append((int(s0), int(e0), lab))
+        if fx:
+            layers.append(fx)
+    if not layers:
+        raise ValueError("no labelled timing effects in that file")
+
+    VIS = {"AI", "E", "FV", "L", "MBP", "O", "U", "WQ", "ETC", "REST"}
+
+    def is_phonemes(fx):
+        return sum(1 for _, _, l in fx if l.upper() in VIS) > len(fx) * 0.8
+
+    spoken = [fx for fx in layers if not is_phonemes(fx)]
+    if not spoken:
+        raise ValueError("that file only has a phoneme layer, no words")
+
+    # a phrases layer has multi-word labels; a words layer is one word each
+    def multiword_share(fx):
+        return sum(1 for _, _, l in fx if " " in l) / len(fx)
+
+    words = max(spoken, key=len)
+    # Use a phrases layer only when it really is segmented into lines. Some
+    # xLights exports hold the entire lyric in one phrase effect, which would
+    # collapse to a single enormous line and lose the structure the aligner
+    # benefits from; rebuilding lines from the words layer is better there.
+    phrases = [fx for fx in spoken
+               if multiword_share(fx) > 0.5 and len(fx) >= max(4, len(words) // 40)]
+    if phrases:
+        return "\n".join(l for _, _, l in max(phrases, key=len))
+
+    gaps = [b[0] - a[1] for a, b in zip(words, words[1:])]
+    thresh = int(np.clip(np.percentile(gaps, 88) if gaps else 400, 150, 800))
+    lines, cur = [], [words[0][2]]
+    for prev, nxt in zip(words, words[1:]):
+        if nxt[0] - prev[1] >= thresh:
+            lines.append(" ".join(cur))
+            cur = []
+        cur.append(nxt[2])
+    if cur:
+        lines.append(" ".join(cur))
+    return "\n".join(lines)
+
+
 def repair_xtiming(xml_text, name=None, gap_ms=None, grid_ms=25):
     """Upgrade a two-layer xtiming (words + phonemes) to the three layers
     xLights expects.

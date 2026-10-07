@@ -22,8 +22,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 
 from pumpkin import FPS, STYLES, envelope, load_audio, tts
-from sprite import (aligned_word_tokens, lyric_tokens, render_video, slice_sheet,
-                    slice_sheet_color, sprite_track, words_to_xtiming, xtiming_track)
+from sprite import (aligned_word_tokens, lyric_tokens, lyrics_from_xtiming,
+                    render_video, slice_sheet, slice_sheet_color, sprite_track,
+                    words_to_xtiming, xtiming_track)
 
 # AutoLyrixAlign service (runs on node7; see xlight-autosequencer/deploy/aligner)
 ALIGNER_URL = os.environ.get("ALIGNER_URL", "http://172.16.0.127:3001")
@@ -267,13 +268,28 @@ def safe_filename(name):
 @app.post("/api/timing")
 def make_timing():
     """Build an xLights timing track from audio + lyrics, with no video."""
-    name = (request.form.get("name") or "").strip() or "Lyrics"
+    name = (request.form.get("name") or "").strip()
     lrc = request.form.get("lyrics", "")
     audio_file = request.files.get("audio")
     if not audio_file or not audio_file.filename:
         return jsonify({"error": "choose an audio file"}), 400
+
+    # an existing timing track can stand in for the lyrics: its words are in
+    # order, which saves retyping and handles tracks cut to a different mix
+    src = request.files.get("source")
+    if src and src.filename:
+        try:
+            xml = src.read().decode("utf-8", "replace")
+            if not lrc.strip():
+                lrc = lyrics_from_xtiming(xml)
+            if not name:
+                import xml.etree.ElementTree as ET
+                name = (ET.fromstring(xml).get("name") or "").strip()
+        except Exception as e:
+            return jsonify({"error": f"couldn't read lyrics from that timing track: {e}"}), 400
+    name = name or "Lyrics"
     if not lrc.strip():
-        return jsonify({"error": "paste the lyrics to align"}), 400
+        return jsonify({"error": "paste lyrics, or upload a timing track to take them from"}), 400
 
     raw = os.path.join(UPLOADS, uuid.uuid4().hex[:10]
                        + os.path.splitext(audio_file.filename)[1])

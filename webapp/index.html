@@ -168,6 +168,11 @@ Ain't nothin' but a heartache"></textarea>
     <label>Lyrics</label>
     <textarea id="tLyrics" placeholder="Paste the lyrics, one line per sung line.
 Section markers in [brackets] are ignored."></textarea>
+    <label>…or take the lyrics from an existing timing track (.xtiming)</label>
+    <input type="file" id="tSource" accept=".xtiming,.xml">
+    <div class="hint">Handy when a community track has the right words but was cut
+      to a different mix — the words are reused and re-aligned to <i>your</i> audio.
+      Leave the lyrics box empty to use it.</div>
     <div class="hint">Alignment runs on the node7 aligner, roughly 2 minutes per song,
       one song at a time. You get three layers: phrases, words and phonemes.</div>
     <button id="goTiming">Build timing track</button>
@@ -306,11 +311,15 @@ document.getElementById('goSong').onclick = () => {
 document.getElementById('goTiming').onclick = () => {
   const f = document.getElementById('tAudio').files[0];
   if (!f) return alert('Choose an audio file');
-  if (!document.getElementById('tLyrics').value.trim()) return alert('Paste the lyrics');
+  if (!document.getElementById('tLyrics').value.trim()
+      && !document.getElementById('tSource').files[0])
+    return alert('Paste the lyrics, or choose a timing track to take them from');
   const fd = new FormData();
   fd.append('audio', f);
   fd.append('name', document.getElementById('tName').value);
   fd.append('lyrics', document.getElementById('tLyrics').value);
+  const src = document.getElementById('tSource').files[0];
+  if (src) fd.append('source', src);
   startRender(document.getElementById('goTiming'), document.getElementById('job3'),
     ['/api/timing', {method:'POST', body: fd}]);
 };
